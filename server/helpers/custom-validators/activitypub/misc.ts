@@ -1,9 +1,9 @@
-import * as validator from 'validator'
-import { CONSTRAINTS_FIELDS } from '../../../initializers'
+import validator from 'validator'
+import { CONSTRAINTS_FIELDS } from '../../../initializers/constants'
 import { isTestInstance } from '../../core-utils'
 import { exists } from '../misc'
 
-function isActivityPubUrlValid (url: string) {
+function isUrlValid (url: string) {
   const isURLOptions = {
     require_host: true,
     require_tld: true,
@@ -17,21 +17,30 @@ function isActivityPubUrlValid (url: string) {
     isURLOptions.require_tld = false
   }
 
-  return exists(url) && validator.isURL('' + url, isURLOptions) && validator.isLength('' + url, CONSTRAINTS_FIELDS.ACTORS.URL)
+  return exists(url) && validator.isURL('' + url, isURLOptions)
+}
+
+function isActivityPubUrlValid (url: string) {
+  return isUrlValid(url) && validator.isLength('' + url, CONSTRAINTS_FIELDS.ACTORS.URL)
 }
 
 function isBaseActivityValid (activity: any, type: string) {
-  return (activity['@context'] === undefined || Array.isArray(activity['@context'])) &&
-    activity.type === type &&
+  return activity.type === type &&
     isActivityPubUrlValid(activity.id) &&
-    (isActivityPubUrlValid(activity.actor) || isActivityPubUrlValid(activity.actor.id)) &&
+    isObjectValid(activity.actor) &&
+    isUrlCollectionValid(activity.to) &&
+    isUrlCollectionValid(activity.cc)
+}
+
+function isUrlCollectionValid (collection: any) {
+  return collection === undefined ||
+    (Array.isArray(collection) && collection.every(t => isActivityPubUrlValid(t)))
+}
+
+function isObjectValid (object: any) {
+  return exists(object) &&
     (
-      activity.to === undefined ||
-      (Array.isArray(activity.to) && activity.to.every(t => isActivityPubUrlValid(t)))
-    ) &&
-    (
-      activity.cc === undefined ||
-      (Array.isArray(activity.cc) && activity.cc.every(t => isActivityPubUrlValid(t)))
+      isActivityPubUrlValid(object) || isActivityPubUrlValid(object.id)
     )
 }
 
@@ -41,17 +50,17 @@ function setValidAttributedTo (obj: any) {
     return true
   }
 
-  const newAttributesTo = obj.attributedTo.filter(a => {
+  obj.attributedTo = obj.attributedTo.filter(a => {
     return (a.type === 'Group' || a.type === 'Person') && isActivityPubUrlValid(a.id)
   })
-
-  obj.attributedTo = newAttributesTo
 
   return true
 }
 
 export {
+  isUrlValid,
   isActivityPubUrlValid,
   isBaseActivityValid,
-  setValidAttributedTo
+  setValidAttributedTo,
+  isObjectValid
 }

@@ -1,10 +1,9 @@
 import { Routes } from '@angular/router'
-
-import { UserRightGuard } from '../../core'
-import { UserRight } from '../../../../../shared'
-import { UsersComponent } from './users.component'
-import { UserAddComponent, UserUpdateComponent } from './user-edit'
+import { ServerConfigResolver, UserRightGuard } from '@app/core'
+import { UserRight } from '@shared/models'
+import { UserCreateComponent, UserUpdateComponent } from './user-edit'
 import { UserListComponent } from './user-list'
+import { UsersComponent } from './users.component'
 
 export const UsersRoutes: Routes = [
   {
@@ -30,16 +29,19 @@ export const UsersRoutes: Routes = [
         }
       },
       {
-        path: 'add',
-        component: UserAddComponent,
+        path: 'create',
+        component: UserCreateComponent,
         data: {
           meta: {
-            title: 'Add a user'
+            title: 'Create a user'
           }
+        },
+        resolve: {
+          serverConfig: ServerConfigResolver
         }
       },
       {
-        path: ':id/update',
+        path: 'update/:id',
         component: UserUpdateComponent,
         data: {
           meta: {

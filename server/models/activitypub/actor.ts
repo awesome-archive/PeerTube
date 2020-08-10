@@ -1,25 +1,22 @@
 import { values } from 'lodash'
 import { extname } from 'path'
-import * as Sequelize from 'sequelize'
 import {
   AllowNull,
   BelongsTo,
   Column,
   CreatedAt,
   DataType,
-  Default,
   DefaultScope,
   ForeignKey,
   HasMany,
   HasOne,
   Is,
-  IsUUID,
   Model,
   Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
-import { ActivityPubActorType } from '../../../shared/models/activitypub'
+import { ActivityIconObject, ActivityPubActorType } from '../../../shared/models/activitypub'
 import { Avatar } from '../../../shared/models/avatars/avatar.model'
 import { activityPubContextify } from '../../helpers/activitypub'
 import {
@@ -30,78 +27,131 @@ import {
   isActorPublicKeyValid
 } from '../../helpers/custom-validators/activitypub/actor'
 import { isActivityPubUrlValid } from '../../helpers/custom-validators/activitypub/misc'
-import { ACTIVITY_PUB, ACTIVITY_PUB_ACTOR_TYPES, CONFIG, CONSTRAINTS_FIELDS } from '../../initializers'
+import { ACTIVITY_PUB, ACTIVITY_PUB_ACTOR_TYPES, CONSTRAINTS_FIELDS, SERVER_ACTOR_NAME, WEBSERVER } from '../../initializers/constants'
 import { AccountModel } from '../account/account'
 import { AvatarModel } from '../avatar/avatar'
 import { ServerModel } from '../server/server'
-import { throwIfNotValid } from '../utils'
+import { isOutdated, throwIfNotValid } from '../utils'
 import { VideoChannelModel } from '../video/video-channel'
 import { ActorFollowModel } from './actor-follow'
+import { VideoModel } from '../video/video'
+import {
+  MActor,
+  MActorAccountChannelId,
+  MActorAP,
+  MActorFormattable,
+  MActorFull,
+  MActorHost,
+  MActorServer,
+  MActorSummaryFormattable, MActorUrl,
+  MActorWithInboxes
+} from '../../types/models'
+import * as Bluebird from 'bluebird'
+import { Op, Transaction, literal } from 'sequelize'
+import { ModelCache } from '@server/models/model-cache'
 
 enum ScopeNames {
   FULL = 'FULL'
 }
 
-@DefaultScope({
+export const unusedActorAttributesForAPI = [
+  'publicKey',
+  'privateKey',
+  'inboxUrl',
+  'outboxUrl',
+  'sharedInboxUrl',
+  'followersUrl',
+  'followingUrl',
+  'url',
+  'createdAt',
+  'updatedAt'
+]
+
+@DefaultScope(() => ({
   include: [
     {
-      model: () => ServerModel,
+      model: ServerModel,
       required: false
     },
     {
-      model: () => AvatarModel,
+      model: AvatarModel,
       required: false
     }
   ]
-})
-@Scopes({
+}))
+@Scopes(() => ({
   [ScopeNames.FULL]: {
     include: [
       {
-        model: () => AccountModel.unscoped(),
+        model: AccountModel.unscoped(),
         required: false
       },
       {
-        model: () => VideoChannelModel.unscoped(),
+        model: VideoChannelModel.unscoped(),
+        required: false,
+        include: [
+          {
+            model: AccountModel,
+            required: true
+          }
+        ]
+      },
+      {
+        model: ServerModel,
         required: false
       },
       {
-        model: () => ServerModel,
-        required: false
-      },
-      {
-        model: () => AvatarModel,
+        model: AvatarModel,
         required: false
       }
     ]
   }
-})
+}))
 @Table({
   tableName: 'actor',
   indexes: [
     {
-      fields: [ 'url' ]
-    },
-    {
-      fields: [ 'preferredUsername', 'serverId' ],
+      fields: [ 'url' ],
       unique: true
     },
     {
+      fields: [ 'preferredUsername', 'serverId' ],
+      unique: true,
+      where: {
+        serverId: {
+          [Op.ne]: null
+        }
+      }
+    },
+    {
+      fields: [ 'preferredUsername' ],
+      unique: true,
+      where: {
+        serverId: null
+      }
+    },
+    {
       fields: [ 'inboxUrl', 'sharedInboxUrl' ]
+    },
+    {
+      fields: [ 'sharedInboxUrl' ]
+    },
+    {
+      fields: [ 'serverId' ]
+    },
+    {
+      fields: [ 'avatarId' ]
+    },
+    {
+      fields: [ 'followersUrl' ]
     }
   ]
 })
 export class ActorModel extends Model<ActorModel> {
 
   @AllowNull(false)
-  @Column(DataType.ENUM(values(ACTIVITY_PUB_ACTOR_TYPES)))
+  @Column(DataType.ENUM(...values(ACTIVITY_PUB_ACTOR_TYPES)))
   type: ActivityPubActorType
-
-  @AllowNull(false)
-  @Default(DataType.UUIDV4)
-  @IsUUID(4)
-  @Column(DataType.UUID)
-  uuid: string
 
   @AllowNull(false)
   @Is('ActorPreferredUsername', value => throwIfNotValid(value, isActorPreferredUsernameValid, 'actor preferred username'))
@@ -114,12 +164,12 @@ export class ActorModel extends Model<ActorModel> {
   url: string
 
   @AllowNull(true)
-  @Is('ActorPublicKey', value => throwIfNotValid(value, isActorPublicKeyValid, 'public key'))
+  @Is('ActorPublicKey', value => throwIfNotValid(value, isActorPublicKeyValid, 'public key', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.PUBLIC_KEY.max))
   publicKey: string
 
   @AllowNull(true)
-  @Is('ActorPublicKey', value => throwIfNotValid(value, isActorPrivateKeyValid, 'private key'))
+  @Is('ActorPublicKey', value => throwIfNotValid(value, isActorPrivateKeyValid, 'private key', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.PRIVATE_KEY.max))
   privateKey: string
 
@@ -138,23 +188,23 @@ export class ActorModel extends Model<ActorModel> {
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.URL.max))
   inboxUrl: string
 
-  @AllowNull(false)
-  @Is('ActorOutboxUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'outbox url'))
+  @AllowNull(true)
+  @Is('ActorOutboxUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'outbox url', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.URL.max))
   outboxUrl: string
 
-  @AllowNull(false)
-  @Is('ActorSharedInboxUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'shared inbox url'))
+  @AllowNull(true)
+  @Is('ActorSharedInboxUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'shared inbox url', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.URL.max))
   sharedInboxUrl: string
 
-  @AllowNull(false)
-  @Is('ActorFollowersUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'followers url'))
+  @AllowNull(true)
+  @Is('ActorFollowersUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'followers url', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.URL.max))
   followersUrl: string
 
-  @AllowNull(false)
-  @Is('ActorFollowingUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'following url'))
+  @AllowNull(true)
+  @Is('ActorFollowingUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'following url', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ACTORS.URL.max))
   followingUrl: string
 
@@ -182,6 +232,7 @@ export class ActorModel extends Model<ActorModel> {
       name: 'actorId',
       allowNull: false
     },
+    as: 'ActorFollowings',
     onDelete: 'cascade'
   })
   ActorFollowing: ActorFollowModel[]
@@ -226,15 +277,63 @@ export class ActorModel extends Model<ActorModel> {
   })
   VideoChannel: VideoChannelModel
 
-  static load (id: number) {
-    return ActorModel.unscoped().findById(id)
+  static load (id: number): Bluebird<MActor> {
+    return ActorModel.unscoped().findByPk(id)
   }
 
-  static listByFollowersUrls (followersUrls: string[], transaction?: Sequelize.Transaction) {
+  static loadFull (id: number): Bluebird<MActorFull> {
+    return ActorModel.scope(ScopeNames.FULL).findByPk(id)
+  }
+
+  static loadFromAccountByVideoId (videoId: number, transaction: Transaction): Bluebird<MActor> {
+    const query = {
+      include: [
+        {
+          attributes: [ 'id' ],
+          model: AccountModel.unscoped(),
+          required: true,
+          include: [
+            {
+              attributes: [ 'id' ],
+              model: VideoChannelModel.unscoped(),
+              required: true,
+              include: [
+                {
+                  attributes: [ 'id' ],
+                  model: VideoModel.unscoped(),
+                  required: true,
+                  where: {
+                    id: videoId
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      transaction
+    }
+
+    return ActorModel.unscoped().findOne(query)
+  }
+
+  static isActorUrlExist (url: string) {
+    const query = {
+      raw: true,
+      where: {
+        url
+      }
+    }
+
+    return ActorModel.unscoped().findOne(query)
+      .then(a => !!a)
+  }
+
+  static listByFollowersUrls (followersUrls: string[], transaction?: Transaction): Bluebird<MActorFull[]> {
     const query = {
       where: {
         followersUrl: {
-          [ Sequelize.Op.in ]: followersUrls
+          [Op.in]: followersUrls
         }
       },
       transaction
@@ -243,18 +342,54 @@ export class ActorModel extends Model<ActorModel> {
     return ActorModel.scope(ScopeNames.FULL).findAll(query)
   }
 
-  static loadLocalByName (preferredUsername: string) {
-    const query = {
-      where: {
-        preferredUsername,
-        serverId: null
+  static loadLocalByName (preferredUsername: string, transaction?: Transaction): Bluebird<MActorFull> {
+    const fun = () => {
+      const query = {
+        where: {
+          preferredUsername,
+          serverId: null
+        },
+        transaction
       }
+
+      return ActorModel.scope(ScopeNames.FULL)
+                       .findOne(query)
     }
 
-    return ActorModel.scope(ScopeNames.FULL).findOne(query)
+    return ModelCache.Instance.doCache({
+      cacheType: 'local-actor-name',
+      key: preferredUsername,
+      // The server actor never change, so we can easily cache it
+      whitelist: () => preferredUsername === SERVER_ACTOR_NAME,
+      fun
+    })
   }
 
-  static loadByNameAndHost (preferredUsername: string, host: string) {
+  static loadLocalUrlByName (preferredUsername: string, transaction?: Transaction): Bluebird<MActorUrl> {
+    const fun = () => {
+      const query = {
+        attributes: [ 'url' ],
+        where: {
+          preferredUsername,
+          serverId: null
+        },
+        transaction
+      }
+
+      return ActorModel.unscoped()
+                       .findOne(query)
+    }
+
+    return ModelCache.Instance.doCache({
+      cacheType: 'local-actor-name',
+      key: preferredUsername,
+      // The server actor never change, so we can easily cache it
+      whitelist: () => preferredUsername === SERVER_ACTOR_NAME,
+      fun
+    })
+  }
+
+  static loadByNameAndHost (preferredUsername: string, host: string): Bluebird<MActorFull> {
     const query = {
       where: {
         preferredUsername
@@ -273,7 +408,30 @@ export class ActorModel extends Model<ActorModel> {
     return ActorModel.scope(ScopeNames.FULL).findOne(query)
   }
 
-  static loadByUrl (url: string, transaction?: Sequelize.Transaction) {
+  static loadByUrl (url: string, transaction?: Transaction): Bluebird<MActorAccountChannelId> {
+    const query = {
+      where: {
+        url
+      },
+      transaction,
+      include: [
+        {
+          attributes: [ 'id' ],
+          model: AccountModel.unscoped(),
+          required: false
+        },
+        {
+          attributes: [ 'id' ],
+          model: VideoChannelModel.unscoped(),
+          required: false
+        }
+      ]
+    }
+
+    return ActorModel.unscoped().findOne(query)
+  }
+
+  static loadByUrlAndPopulateAccountAndChannel (url: string, transaction?: Transaction): Bluebird<MActorFull> {
     const query = {
       where: {
         url
@@ -284,88 +442,93 @@ export class ActorModel extends Model<ActorModel> {
     return ActorModel.scope(ScopeNames.FULL).findOne(query)
   }
 
-  static incrementFollows (id: number, column: 'followersCount' | 'followingCount', by: number) {
-    // FIXME: typings
-    return (ActorModel as any).increment(column, {
-      by,
-      where: {
-        id
-      }
-    })
+  static rebuildFollowsCount (ofId: number, type: 'followers' | 'following', transaction?: Transaction) {
+    const sanitizedOfId = parseInt(ofId + '', 10)
+    const where = { id: sanitizedOfId }
+
+    let columnToUpdate: string
+    let columnOfCount: string
+
+    if (type === 'followers') {
+      columnToUpdate = 'followersCount'
+      columnOfCount = 'targetActorId'
+    } else {
+      columnToUpdate = 'followingCount'
+      columnOfCount = 'actorId'
+    }
+
+    return ActorModel.update({
+      [columnToUpdate]: literal(`(SELECT COUNT(*) FROM "actorFollow" WHERE "${columnOfCount}" = ${sanitizedOfId})`)
+    }, { where, transaction })
   }
 
-  static async getActorsFollowerSharedInboxUrls (actors: ActorModel[], t: Sequelize.Transaction) {
+  static loadAccountActorByVideoId (videoId: number): Bluebird<MActor> {
     const query = {
-      // attribute: [],
-      where: {
-        id: {
-          [Sequelize.Op.in]: actors.map(a => a.id)
-        }
-      },
       include: [
         {
-          // attributes: [ ],
-          model: ActorFollowModel.unscoped(),
+          attributes: [ 'id' ],
+          model: AccountModel.unscoped(),
           required: true,
-          as: 'ActorFollowers',
-          where: {
-            state: 'accepted'
-          },
           include: [
             {
-              attributes: [ 'sharedInboxUrl' ],
-              model: ActorModel.unscoped(),
-              as: 'ActorFollower',
-              required: true
+              attributes: [ 'id', 'accountId' ],
+              model: VideoChannelModel.unscoped(),
+              required: true,
+              include: [
+                {
+                  attributes: [ 'id', 'channelId' ],
+                  model: VideoModel.unscoped(),
+                  where: {
+                    id: videoId
+                  }
+                }
+              ]
             }
           ]
         }
-      ],
-      transaction: t
+      ]
     }
 
-    const hash: { [ id: number ]: string[] } = {}
-    const res = await ActorModel.findAll(query)
-    for (const actor of res) {
-      hash[actor.id] = actor.ActorFollowers.map(follow => follow.ActorFollower.sharedInboxUrl)
-    }
-
-    return hash
+    return ActorModel.unscoped().findOne(query)
   }
 
-  toFormattedJSON () {
+  getSharedInbox (this: MActorWithInboxes) {
+    return this.sharedInboxUrl || this.inboxUrl
+  }
+
+  toFormattedSummaryJSON (this: MActorSummaryFormattable) {
     let avatar: Avatar = null
     if (this.Avatar) {
       avatar = this.Avatar.toFormattedJSON()
     }
 
     return {
-      id: this.id,
       url: this.url,
-      uuid: this.uuid,
       name: this.preferredUsername,
       host: this.getHost(),
-      followingCount: this.followingCount,
-      followersCount: this.followersCount,
-      avatar,
-      createdAt: this.createdAt,
-      updatedAt: this.updatedAt
+      avatar
     }
   }
 
-  toActivityPubObject (name: string, type: 'Account' | 'Application' | 'VideoChannel') {
-    let activityPubType
-    if (type === 'Account') {
-      activityPubType = 'Person' as 'Person'
-    } else if (type === 'Application') {
-      activityPubType = 'Application' as 'Application'
-    } else { // VideoChannel
-      activityPubType = 'Group' as 'Group'
-    }
+  toFormattedJSON (this: MActorFormattable) {
+    const base = this.toFormattedSummaryJSON()
 
-    let icon = undefined
+    return Object.assign(base, {
+      id: this.id,
+      hostRedundancyAllowed: this.getRedundancyAllowed(),
+      followingCount: this.followingCount,
+      followersCount: this.followersCount,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt
+    })
+  }
+
+  toActivityPubObject (this: MActorAP, name: string) {
+    let icon: ActivityIconObject
+
     if (this.avatarId) {
       const extension = extname(this.Avatar.filename)
+
       icon = {
         type: 'Image',
         mediaType: extension === '.png' ? 'image/png' : 'image/jpeg',
@@ -374,10 +537,11 @@ export class ActorModel extends Model<ActorModel> {
     }
 
     const json = {
-      type: activityPubType,
+      type: this.type,
       id: this.url,
       following: this.getFollowingUrl(),
       followers: this.getFollowersUrl(),
+      playlists: this.getPlaylistsUrl(),
       inbox: this.inboxUrl,
       outbox: this.outboxUrl,
       preferredUsername: this.preferredUsername,
@@ -386,7 +550,6 @@ export class ActorModel extends Model<ActorModel> {
       endpoints: {
         sharedInbox: this.sharedInboxUrl
       },
-      uuid: this.uuid,
       publicKey: {
         id: this.getPublicKeyUrl(),
         owner: this.url,
@@ -398,7 +561,7 @@ export class ActorModel extends Model<ActorModel> {
     return activityPubContextify(json)
   }
 
-  getFollowerSharedInboxUrls (t: Sequelize.Transaction) {
+  getFollowerSharedInboxUrls (t: Transaction) {
     const query = {
       attributes: [ 'sharedInboxUrl' ],
       include: [
@@ -428,6 +591,10 @@ export class ActorModel extends Model<ActorModel> {
     return this.url + '/followers'
   }
 
+  getPlaylistsUrl () {
+    return this.url + '/playlists'
+  }
+
   getPublicKeyUrl () {
     return this.url + '#main-key'
   }
@@ -436,28 +603,31 @@ export class ActorModel extends Model<ActorModel> {
     return this.serverId === null
   }
 
-  getWebfingerUrl () {
+  getWebfingerUrl (this: MActorServer) {
     return 'acct:' + this.preferredUsername + '@' + this.getHost()
   }
 
-  getHost () {
-    return this.Server ? this.Server.host : CONFIG.WEBSERVER.HOST
+  getIdentifier () {
+    return this.Server ? `${this.preferredUsername}@${this.Server.host}` : this.preferredUsername
+  }
+
+  getHost (this: MActorHost) {
+    return this.Server ? this.Server.host : WEBSERVER.HOST
+  }
+
+  getRedundancyAllowed () {
+    return this.Server ? this.Server.redundancyAllowed : false
   }
 
   getAvatarUrl () {
     if (!this.avatarId) return undefined
 
-    return CONFIG.WEBSERVER.URL + this.Avatar.getWebserverPath()
+    return WEBSERVER.URL + this.Avatar.getStaticPath()
   }
 
   isOutdated () {
     if (this.isOwned()) return false
 
-    const now = Date.now()
-    const createdAtTime = this.createdAt.getTime()
-    const updatedAtTime = this.updatedAt.getTime()
-
-    return (now - createdAtTime) > ACTIVITY_PUB.ACTOR_REFRESH_INTERVAL &&
-      (now - updatedAtTime) > ACTIVITY_PUB.ACTOR_REFRESH_INTERVAL
+    return isOutdated(this, ACTIVITY_PUB.ACTOR_REFRESH_INTERVAL)
   }
 }

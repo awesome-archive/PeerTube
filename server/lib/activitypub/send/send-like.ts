@@ -1,61 +1,40 @@
 import { Transaction } from 'sequelize'
 import { ActivityAudience, ActivityLike } from '../../../../shared/models/activitypub'
-import { ActorModel } from '../../../models/activitypub/actor'
-import { VideoModel } from '../../../models/video/video'
 import { getVideoLikeActivityPubUrl } from '../url'
-import {
-  audiencify,
-  broadcastToFollowers,
-  getActorsInvolvedInVideo,
-  getAudience,
-  getObjectFollowersAudience,
-  getOriginVideoAudience,
-  unicastTo
-} from './misc'
+import { sendVideoRelatedActivity } from './utils'
+import { audiencify, getAudience } from '../audience'
+import { logger } from '../../../helpers/logger'
+import { MActor, MActorAudience, MVideoAccountLight, MVideoUrl } from '../../../types/models'
 
-async function sendLike (byActor: ActorModel, video: VideoModel, t: Transaction) {
-  const url = getVideoLikeActivityPubUrl(byActor, video)
+function sendLike (byActor: MActor, video: MVideoAccountLight, t: Transaction) {
+  logger.info('Creating job to like %s.', video.url)
 
-  const accountsInvolvedInVideo = await getActorsInvolvedInVideo(video, t)
+  const activityBuilder = (audience: ActivityAudience) => {
+    const url = getVideoLikeActivityPubUrl(byActor, video)
 
-  // Send to origin
-  if (video.isOwned() === false) {
-    const audience = getOriginVideoAudience(video, accountsInvolvedInVideo)
-    const data = await likeActivityData(url, byActor, video, t, audience)
-
-    return unicastTo(data, byActor, video.VideoChannel.Account.Actor.sharedInboxUrl)
+    return buildLikeActivity(url, byActor, video, audience)
   }
 
-  // Send to followers
-  const audience = getObjectFollowersAudience(accountsInvolvedInVideo)
-  const data = await likeActivityData(url, byActor, video, t, audience)
-
-  const followersException = [ byActor ]
-  return broadcastToFollowers(data, byActor, accountsInvolvedInVideo, t, followersException)
+  return sendVideoRelatedActivity(activityBuilder, { byActor, video, transaction: t })
 }
 
-async function likeActivityData (
-  url: string,
-  byActor: ActorModel,
-  video: VideoModel,
-  t: Transaction,
-  audience?: ActivityAudience
-): Promise<ActivityLike> {
-  if (!audience) {
-    audience = await getAudience(byActor, t)
-  }
+function buildLikeActivity (url: string, byActor: MActorAudience, video: MVideoUrl, audience?: ActivityAudience): ActivityLike {
+  if (!audience) audience = getAudience(byActor)
 
-  return audiencify({
-    type: 'Like' as 'Like',
-    id: url,
-    actor: byActor.url,
-    object: video.url
-  }, audience)
+  return audiencify(
+    {
+      id: url,
+      type: 'Like' as 'Like',
+      actor: byActor.url,
+      object: video.url
+    },
+    audience
+  )
 }
 
 // ---------------------------------------------------------------------------
 
 export {
   sendLike,
-  likeActivityData
+  buildLikeActivity
 }

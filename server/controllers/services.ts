@@ -1,8 +1,8 @@
 import * as express from 'express'
-import { CONFIG, EMBED_SIZE, PREVIEWS_SIZE } from '../initializers'
+import { EMBED_SIZE, PREVIEWS_SIZE, WEBSERVER, THUMBNAILS_SIZE } from '../initializers/constants'
 import { asyncMiddleware, oembedValidator } from '../middlewares'
-import { accountsNameWithHostGetValidator } from '../middlewares/validators'
-import { VideoModel } from '../models/video/video'
+import { accountNameWithHostGetValidator } from '../middlewares/validators'
+import { MChannelSummary } from '@server/types/models'
 
 const servicesRouter = express.Router()
 
@@ -10,8 +10,8 @@ servicesRouter.use('/oembed',
   asyncMiddleware(oembedValidator),
   generateOEmbed
 )
-servicesRouter.use('/redirect/accounts/:nameWithHost',
-  asyncMiddleware(accountsNameWithHostGetValidator),
+servicesRouter.use('/redirect/accounts/:accountName',
+  asyncMiddleware(accountNameWithHostGetValidator),
   redirectToAccountUrl
 )
 
@@ -23,29 +23,80 @@ export {
 
 // ---------------------------------------------------------------------------
 
-function generateOEmbed (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const video = res.locals.video as VideoModel
-  const webserverUrl = CONFIG.WEBSERVER.URL
+function generateOEmbed (req: express.Request, res: express.Response) {
+  if (res.locals.videoAll) return generateVideoOEmbed(req, res)
+
+  return generatePlaylistOEmbed(req, res)
+}
+
+function generatePlaylistOEmbed (req: express.Request, res: express.Response) {
+  const playlist = res.locals.videoPlaylistSummary
+
+  const json = buildOEmbed({
+    channel: playlist.VideoChannel,
+    title: playlist.name,
+    embedPath: playlist.getEmbedStaticPath(),
+    previewPath: playlist.getThumbnailStaticPath(),
+    previewSize: THUMBNAILS_SIZE,
+    req
+  })
+
+  return res.json(json)
+}
+
+function generateVideoOEmbed (req: express.Request, res: express.Response) {
+  const video = res.locals.videoAll
+
+  const json = buildOEmbed({
+    channel: video.VideoChannel,
+    title: video.name,
+    embedPath: video.getEmbedStaticPath(),
+    previewPath: video.getPreviewStaticPath(),
+    previewSize: PREVIEWS_SIZE,
+    req
+  })
+
+  return res.json(json)
+}
+
+function buildOEmbed (options: {
+  req: express.Request
+  title: string
+  channel: MChannelSummary
+  previewPath: string | null
+  embedPath: string
+  previewSize: {
+    height: number
+    width: number
+  }
+}) {
+  const { req, previewSize, previewPath, title, channel, embedPath } = options
+
+  const webserverUrl = WEBSERVER.URL
   const maxHeight = parseInt(req.query.maxheight, 10)
   const maxWidth = parseInt(req.query.maxwidth, 10)
 
-  const embedUrl = webserverUrl + video.getEmbedPath()
-  let thumbnailUrl = webserverUrl + video.getPreviewPath()
+  const embedUrl = webserverUrl + embedPath
   let embedWidth = EMBED_SIZE.width
   let embedHeight = EMBED_SIZE.height
+
+  let thumbnailUrl = previewPath
+    ? webserverUrl + previewPath
+    : undefined
 
   if (maxHeight < embedHeight) embedHeight = maxHeight
   if (maxWidth < embedWidth) embedWidth = maxWidth
 
   // Our thumbnail is too big for the consumer
   if (
-    (maxHeight !== undefined && maxHeight < PREVIEWS_SIZE.height) ||
-    (maxWidth !== undefined && maxWidth < PREVIEWS_SIZE.width)
+    (maxHeight !== undefined && maxHeight < previewSize.height) ||
+    (maxWidth !== undefined && maxWidth < previewSize.width)
   ) {
     thumbnailUrl = undefined
   }
 
-  const html = `<iframe width="${embedWidth}" height="${embedHeight}" src="${embedUrl}" frameborder="0" allowfullscreen></iframe>`
+  const html = `<iframe width="${embedWidth}" height="${embedHeight}" sandbox="allow-same-origin allow-scripts" ` +
+    `src="${embedUrl}" frameborder="0" allowfullscreen></iframe>`
 
   const json: any = {
     type: 'video',
@@ -53,19 +104,20 @@ function generateOEmbed (req: express.Request, res: express.Response, next: expr
     html,
     width: embedWidth,
     height: embedHeight,
-    title: video.name,
-    author_name: video.VideoChannel.Account.name,
+    title: title,
+    author_name: channel.name,
+    author_url: channel.Actor.url,
     provider_name: 'PeerTube',
     provider_url: webserverUrl
   }
 
   if (thumbnailUrl !== undefined) {
     json.thumbnail_url = thumbnailUrl
-    json.thumbnail_width = PREVIEWS_SIZE.width
-    json.thumbnail_height = PREVIEWS_SIZE.height
+    json.thumbnail_width = previewSize.width
+    json.thumbnail_height = previewSize.height
   }
 
-  return res.json(json)
+  return json
 }
 
 function redirectToAccountUrl (req: express.Request, res: express.Response, next: express.NextFunction) {

@@ -1,6 +1,4 @@
-import { Component, OnInit } from '@angular/core'
-import { Router } from '@angular/router'
-import { getParameterByName } from '../shared/misc/utils'
+import { Component } from '@angular/core'
 
 @Component({
   selector: 'my-header',
@@ -8,19 +6,4 @@ import { getParameterByName } from '../shared/misc/utils'
   styleUrls: [ './header.component.scss' ]
 })
 
-export class HeaderComponent implements OnInit {
-  searchValue = ''
-
-  constructor (private router: Router) {}
-
-  ngOnInit () {
-    const searchQuery = getParameterByName('search', window.location.href)
-    if (searchQuery) this.searchValue = searchQuery
-  }
-
-  doSearch () {
-    this.router.navigate([ '/videos', 'search' ], {
-      queryParams: { search: this.searchValue }
-    })
-  }
-}
+export class HeaderComponent {}

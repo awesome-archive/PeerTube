@@ -1,6 +1,10 @@
+import { registerTSPaths } from '../../../server/helpers/register-ts-paths'
+registerTSPaths()
+
 import * as Promise from 'bluebird'
 import * as rimraf from 'rimraf'
-import { CONFIG, initDatabaseModels, sequelizeTypescript } from '../../../server/initializers'
+import { initDatabaseModels, sequelizeTypescript } from '../../../server/initializers/database'
+import { CONFIG } from '../../../server/initializers/config'
 
 initDatabaseModels(true)
   .then(() => {
@@ -10,7 +14,7 @@ initDatabaseModels(true)
     console.info('Tables of %s deleted.', CONFIG.DATABASE.DBNAME)
 
     const STORAGE = CONFIG.STORAGE
-    Promise.mapSeries(Object.keys(STORAGE), storage => {
+    return Promise.mapSeries(Object.keys(STORAGE), storage => {
       const storageDir = STORAGE[storage]
 
       return new Promise((res, rej) => {
@@ -23,4 +27,8 @@ initDatabaseModels(true)
       })
     })
     .then(() => process.exit(0))
+  })
+  .catch(err => {
+    console.error(err)
+    process.exit(-1)
   })

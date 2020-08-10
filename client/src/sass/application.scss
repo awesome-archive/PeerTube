@@ -1,27 +1,73 @@
+$icon-font-path: '~@neos21/bootstrap3-glyphicons/assets/fonts/';
+
+@import '_bootstrap-variables';
 @import '_variables';
 @import '_mixins';
 
-$icon-font-path: '../../node_modules/bootstrap-sass/assets/fonts/bootstrap/';
-@import '_bootstrap';
+@import '_fonts';
 
-$FontPathSourceSansPro: '../../node_modules/npm-font-source-sans-pro/fonts';
-@import '~npm-font-source-sans-pro/source-sans-pro';
-
-@import '~primeng/resources/themes/bootstrap/theme.css';
-@import '~primeng/resources/primeng.css';
 @import '~video.js/dist/video-js.css';
 
-@import './video-js-custom';
-@import './loading-bar';
+$assets-path: '../../assets/';
+@import './player/index';
+
+@import './bootstrap';
+@import './primeng-custom';
 
 [hidden] {
   display: none !important;
 }
 
 body {
+  /*** theme ***/
+  // now beware node-sass requires interpolation
+  // for css custom properties #{$var}
+  --mainColor: #{$main-color};
+  --mainColorLighter: #{$main-color-lighter};
+  --mainColorLightest: #{$main-color-lightest};
+  --mainHoverColor: #{$main-hover-color};
+  --mainBackgroundColor: #{$bg-color};
+  --mainForegroundColor: #{$fg-color};
+  --secondaryColor: #{$secondary-color};
+
+  --greyForegroundColor: #{$grey-foreground-color};
+  --greyBackgroundColor: #{$grey-background-color};
+
+  --menuBackgroundColor: #{$menu-background};
+  --menuForegroundColor: #{$menu-color};
+  --submenuColor: #{$sub-menu-color};
+
+  --inputForegroundColor: #{$input-foreground-color};
+  --inputBackgroundColor: #{$input-background-color};
+  --inputPlaceholderColor: #{$input-placeholder-color};
+
+  --textareaForegroundColor: #{$textarea-foreground-color};
+  --textareaBackgroundColor: #{$textarea-background-color};
+  --markdownTextareaBackgroundColor: #{$markdown-textarea-background-color};
+
+  --actionButtonColor: #{$grey-foreground-color};
+  --supportButtonBackgroundColor: #{transparent};
+  --supportButtonColor: #{pvar(--actionButtonColor)};
+  --supportButtonHeartColor: #{$support-button-heart};
+
+  --activatedActionButtonColor: #{$activated-action-button-color};
+
+  --expanded-horizontal-margin-content: $expanded-horizontal-margins;
+
   font-family: $main-fonts;
   font-weight: $font-regular;
-  color: #000;
+  color: pvar(--mainForegroundColor);
+  background-color: pvar(--mainBackgroundColor);
+  font-size: 14px;
+  // On desktop browsers, make sure vertical scroll bar is always visible
+  // Allow to disable the scrollbar instead of hide it when the content fit the body
+  // And not move the content and header horizontally sticked to right when the content is updating
+  overflow-y: scroll;
+}
+
+::selection {
+  color: pvar(--mainBackgroundColor);
+  background-color: pvar(--mainHoverColor);
 }
 
 #incompatible-browser {
@@ -38,7 +84,17 @@ strong {
 
 input.readonly {
   /* Force blank on readonly inputs */
-  background-color: #fff !important;
+  background-color: pvar(--inputBackgroundColor) !important;
+}
+
+input, textarea {
+  outline: none;
+  color: pvar(--mainForegroundColor);
+}
+
+button {
+  background: unset;
+  @include disable-outline;
 }
 
 label {
@@ -48,69 +104,136 @@ label {
 
 .form-error {
   display: block;
-  color: $red-error;
+  color: $red;
   margin-top: 5px;
 }
 
 .input-error {
-  border-color: $red-error !important;
+  border-color: $red !important;
+}
+
+.fullWidth {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: initial;
 }
 
 .glyphicon-black {
   color: black;
 }
 
+.row {
+  margin: 0 !important;
+}
+
 .main-col {
   margin-left: $menu-width;
+  width: calc(100% - #{$menu-width});
+  outline: none;
 
   .margin-content {
     margin-left: $not-expanded-horizontal-margins;
     margin-right: $not-expanded-horizontal-margins;
+    flex-grow: 1;
+  }
+
+  my-top-menu-dropdown + .margin-content {
+    padding-top: $sub-menu-height + $sub-menu-margin-bottom;
   }
 
   .sub-menu {
-    background-color: #F7F7F7;
+    background-color: pvar(--submenuColor);
     width: 100%;
-    height: 81px;
-    margin-bottom: 30px;
     display: flex;
     align-items: center;
     padding-left: $not-expanded-horizontal-margins;
+    padding-right: $not-expanded-horizontal-margins;
+
+    & + .margin-content {
+      padding-top: $sub-menu-margin-bottom;
+    }
+
+    &.sub-menu-fixed {
+      height: $sub-menu-height;
+      position: fixed;
+      z-index: #{z('header') - 1};
+
+      & + .margin-content {
+        padding-top: $sub-menu-height + $sub-menu-margin-bottom;
+      }
+    }
   }
 
   // Override some properties if the main content is expanded (no menu on the left)
   &.expanded {
     margin-left: 0;
+    width: 100%;
 
     .margin-content {
-      margin-left: $expanded-horizontal-margins;
-      margin-right: $expanded-horizontal-margins;
+      margin-left: var(--expanded-horizontal-margin-content);
+      margin-right: var(--expanded-horizontal-margin-content);
     }
 
     .sub-menu {
-      padding-left: $expanded-horizontal-margins;
+      padding-left: var(--expanded-horizontal-margin-content);
+      padding-right: var(--expanded-horizontal-margin-content);
+    }
+  }
+
+  &.lock-scroll .main-row > router-outlet + * {
+    // Lock and hide body scrollbars
+    position: fixed;
+
+    // Lock and hide sub-menu scrollbars
+    .sub-menu {
+      overflow-x: hidden;
     }
   }
 }
 
 .title-page {
-  color: #000;
+  opacity: 0.6;
+  color: pvar(--mainForegroundColor);
   font-size: 16px;
   display: inline-block;
   margin-right: 55px;
   font-weight: $font-semibold;
   @include disable-default-a-behaviour;
 
-  &.active, &.title-page-single {
-    border-bottom: 2px solid $orange-color;
-    font-weight: $font-bold;
+  border-bottom: 2px solid transparent;
+
+  &.title-page-single {
     margin-top: 30px;
     margin-bottom: 25px;
   }
 
-  &:hover, &:active, &:focus {
-    color: #000;
+  &.active {
+    border-bottom-color: pvar(--mainColor);
   }
+
+  &.title-page-single {
+    font-size: 125%;
+  }
+
+  &:hover, &:active, &:focus {
+    color: pvar(--mainForegroundColor);
+  }
+
+  &.active, &:hover,  &:active, &:focus, &.title-page-single {
+    opacity: 1;
+    outline: 0px hidden !important;
+  }
+
+  @media screen and (max-width: $mobile-view) {
+    margin-right: 15px;
+  }
+}
+
+.title-page-about,
+.title-page-settings {
+  white-space: nowrap;
+  font-size: 115%;
 }
 
 .admin-sub-header {
@@ -118,19 +241,33 @@ label {
   align-items: center;
   margin-bottom: 30px;
 
-  .admin-sub-title {
+  .form-sub-title {
     flex-grow: 1;
+  }
+
+  .admin-sub-nav a {
+    @include disable-default-a-behaviour;
+
+    font-size: 16px;
+    color: pvar(--mainForegroundColor);
+    padding: 5px 15px;
+    border-radius: 0.25rem;
+    font-weight: $font-semibold;
+    opacity: 0.6;
+
+    &.active {
+      background-color: #f0f0f0;
+    }
+
+    &.active, &:hover, &:active, &:focus {
+      opacity: 1;
+    }
   }
 }
 
-.admin-sub-title {
+.form-sub-title {
   font-size: 20px;
   font-weight: bold;
-}
-
-// Thanks https://gist.github.com/alexandrevicenzi/680147013e902a4eaa5d
-.glyphicon-refresh-animate {
-  animation: spin .7s infinite linear;
 }
 
 @keyframes spin {
@@ -138,293 +275,165 @@ label {
   to { transform: scale(1) rotate(360deg);}
 }
 
-// ngprime data table customizations
-p-table {
-  font-size: 15px !important;
-
-  td {
-    border: 1px solid #E5E5E5 !important;
-    padding-left: 15px !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-    white-space: nowrap !important;
-  }
-
-  tr {
-    background-color: #fff !important;
-    height: 46px;
-  }
-
-  .ui-table-tbody {
-    tr {
-      &:hover {
-        background-color: #f0f0f0 !important;
-      }
-
-      &:not(:hover) {
-        .action-cell * {
-          display: none !important;
-        }
-      }
-
-      &:first-child td {
-        border-top: none !important;
-      }
-
-      &:last-child td {
-        border-bottom: none !important;
-      }
-    }
-
-    .expander {
-      cursor: pointer;
-      position: relative;
-      top: 1px;
-    }
-  }
-
-  th {
-    border: none !important;
-    border-bottom: 1px solid #f0f0f0 !important;
-    text-align: left !important;
-    padding: 5px 0 5px 15px !important;
-    font-weight: $font-semibold !important;
-    color: #000 !important;
-
-    &.ui-sortable-column:hover {
-      background-color: #f0f0f0 !important;
-      border: 1px solid #f0f0f0 !important;
-      border-width: 0 1px !important;
-
-      &:first-child {
-        border-width: 0 1px 0 0 !important;
-      }
-    }
-
-    &.ui-state-highlight {
-      background-color: #fff !important;
-
-      .fa {
-        @extend .glyphicon;
-        font-size: 11px;
-
-        &.fa-sort-asc {
-          @extend .glyphicon-triangle-top;
-        }
-
-        &.fa-sort-desc {
-          @extend .glyphicon-triangle-bottom;
-        }
-      }
-    }
-  }
-
-  .action-cell {
-    width: 250px !important;
-    padding: 0 !important;
-    text-align: center;
-  }
-
-  p-paginator {
-    .ui-paginator-bottom {
-      position: relative;
-      border: none !important;
-      border: 1px solid #f0f0f0 !important;
-      height: 40px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-
-      a {
-        color: #000 !important;
-        font-weight: $font-semibold !important;
-        margin-right: 20px !important;
-        outline: 0 !important;
-        border-radius: 3px !important;
-        padding: 5px 2px !important;
-
-        &.ui-state-active {
-          &, &:hover, &:active, &:focus {
-            color: #fff !important;
-            background-color: $orange-color !important;
-          }
-        }
-      }
-    }
-  }
-}
-
-// Bootstrap customizations
-.dropdown-menu {
-  border-radius: 3px;
-  box-shadow: 0 3px 6px;
-  font-size: 15px;
-
-  .dropdown-item {
-    padding: 3px 15px;
-  }
-
-  a {
-    color: #000 !important;
-  }
-}
-
-.modal {
-  .modal-header {
-    border-bottom: none;
-    margin-bottom: 5px;
-
-    .modal-title {
-      font-size: 20px;
-      font-weight: $font-semibold;
-    }
-
-    .close {
-      @include icon(24px);
-
-      position: relative;
-      right: -1px;
-      float: right;
-      background-image: url('../assets/images/global/cross.svg');
-    }
-  }
-
-  .inputs {
-    margin-top: 40px;
-    margin-bottom: 0;
-    text-align: right;
-
-    .action-button-cancel {
-      @include peertube-button;
-      @include grey-button;
-
-      display: inline-block;
-      margin-right: 10px;
-    }
-
-    .action-button-submit {
-      @include peertube-button;
-      @include orange-button;
-    }
-  }
-}
-
-tabset:not(.bootstrap) {
-  .nav {
-    font-size: 16px !important;
-    border: none !important;
-
-    .nav-item .nav-link {
-      margin-right: 30px;
-      padding: 0;
-      border-radius: 3px;
-      border: none !important;
-
-      .tab-link {
-        display: flex !important;
-        align-items: center;
-        min-height: 30px !important;
-        padding: 0 15px;
-      }
-
-      &, & a {
-        color: #000 !important;
-        @include disable-default-a-behaviour;
-      }
-
-      &.active, &:hover {
-        background-color: #F0F0F0;
-      }
-
-      &.active {
-        font-weight: $font-semibold !important;
-      }
-    }
-  }
-}
-
-tabset.bootstrap {
-  .nav-item .nav-link {
-    &, & a {
-      color: #000;
-      @include disable-default-a-behaviour;
-    }
-  }
-}
-
-.orange-button {
-  @include peertube-button;
-  @include orange-button;
-}
-
-.orange-button-link {
-  @include peertube-button-link;
-  @include orange-button;
-}
-
-.grey-button {
-  @include peertube-button;
-  @include grey-button;
-}
-
-.grey-button-link {
-  @include peertube-button-link;
-  @include grey-button;
-}
-
 // In tables, don't have a hover different background
 table {
   .action-button-edit, .action-button-delete {
     &:hover, &:active, &:focus, &[disabled], &.disabled {
-      background-color: $grey-color !important;
+      background-color: $grey-background-color !important;
     }
   }
 }
 
-@media screen and (max-width: 900px) {
+.no-results {
+  height: 40vh;
+  max-height: 500px;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: $font-semibold;
+}
+
+.dropdown-item {
+  @include dropdown-with-icon-item;
+
+  my-global-icon {
+    width: 22px;
+    height: 22px;
+  }
+}
+
+.anchor {
+  position: relative;
+  top: #{-($header-height + 20px)};
+}
+
+@media screen and (max-width: #{breakpoint(xxl)}) {
+  .main-col {
+    &.expanded {
+      .margin-content {
+        --expanded-horizontal-margin-content: $expanded-horizontal-margins/2;
+      }
+    }
+  }
+}
+
+@media screen and (max-width: #{breakpoint(lg)}) {
+  /* the following applies from 500px to 900px and is partially overriden from 500px to 800px by changes below to $small-view */
   .main-col {
     &, &.expanded {
       .margin-content {
-        margin-left: 50px;
-        margin-right: 50px;
+        --expanded-horizontal-margin-content: $expanded-horizontal-margins/3;
       }
 
       .sub-menu {
         padding-left: 50px;
+        padding-right: 50px;
+
+        .title-page {
+          font-size: 17px;
+        }
       }
     }
   }
 }
 
-// On small screen, menu is absolute
-@media screen and (max-width: 600px) {
-  .title-menu-left {
-    width: 100% !important;
-    position: absolute !important;
-    z-index: 10000;
+@media screen and (min-width: $mobile-view) and (max-width: $small-view) {
+  .main-col {
+    width: 100%;
   }
+}
 
+@media screen and (max-width: $small-view) {
   .main-col {
     margin-left: 0;
 
     &, &.expanded {
       .margin-content {
-        margin-left: 15px;
-        margin-right: 15px;
+        --expanded-horizontal-margin-content: 15px;
       }
 
       .sub-menu {
+        width: 100vw;
         padding-left: 15px;
-        margin-bottom: 10px;
+        padding-right: 15px;
+        margin-bottom: $sub-menu-margin-bottom-small-view;
+        overflow-x: auto;
       }
 
-      input[type=text], input[type=password] {
-        width: 100% !important;
+      .admin-sub-header {
+        @include admin-sub-header-responsive(15px*2);
+      }
+
+      my-markdown-textarea {
+        .root {
+          max-width: 100% !important;
+        }
+      }
+
+      input[type=text],
+      input[type=password],
+      input[type=email],
+      textarea,
+      .peertube-select-container {
+        flex-grow: 1;
+      }
+
+      .caption input[type=text] {
+        width: unset !important;
+        flex-grow: 1;
       }
     }
   }
+}
 
-  bs-dropdown-container {
-    z-index: 10000;
+// overflow-databale responsive rules
+@media screen and (min-width: #{breakpoint(lg)}) {
+  .main-col {
+    &.expanded {
+      @include overflow-datatable(breakpoint(lg), $expanded-horizontal-margins/2, $mobile-paginator: false);
+    }
+
+    &:not(.expanded) {
+      @include overflow-datatable(breakpoint(lg), $not-expanded-horizontal-margins + $menu-width/2, $mobile-paginator: false);
+    }
+  }
+}
+
+@media screen and (max-width: #{breakpoint(lg)}) {
+  .main-col {
+    &.expanded {
+      @include overflow-datatable(breakpoint(lg), $expanded-horizontal-margins/3);
+    }
+
+    &:not(.expanded) {
+      @include overflow-datatable(breakpoint(lg), $expanded-horizontal-margins/3 + $menu-width/2);
+    }
+  }
+}
+
+@media screen and (max-width: $small-view) {
+  .main-col {
+    &:not(.expanded),
+    &.expanded {
+      @include overflow-datatable(breakpoint(lg), 15px);
+    }
+  }
+}
+
+@media screen and (min-width: $small-view) and (max-width: #{$small-view + $menu-width}) {
+  .main-col {
+    &:not(.expanded) {
+      .admin-sub-header {
+        @include admin-sub-header-responsive($expanded-horizontal-margins/3 + $menu-width/2);
+      }
+
+      .sub-menu {
+        overflow-x: auto;
+        width: calc(100vw - #{$menu-width});
+      }
+    }
   }
 }

@@ -1,10 +1,11 @@
 import {
   ActivityIconObject,
-  ActivityIdentifierObject, ActivityPubAttributedTo,
+  ActivityIdentifierObject,
+  ActivityPubAttributedTo,
   ActivityTagObject,
   ActivityUrlObject
 } from './common-objects'
-import { ActivityPubOrderedCollection } from '../activitypub-ordered-collection'
+import { VideoState } from '../../videos'
 
 export interface VideoTorrentObject {
   type: 'Video'
@@ -16,20 +17,27 @@ export interface VideoTorrentObject {
   category: ActivityIdentifierObject
   licence: ActivityIdentifierObject
   language: ActivityIdentifierObject
+  subtitleLanguage: ActivityIdentifierObject[]
   views: number
   sensitive: boolean
   commentsEnabled: boolean
+  downloadEnabled: boolean
+  waitTranscoding: boolean
+  state: VideoState
   published: string
+  originallyPublishedAt: string
   updated: string
   mediaType: 'text/markdown'
   content: string
   support: string
-  icon: ActivityIconObject
+
+  icon: ActivityIconObject[]
+
   url: ActivityUrlObject[]
-  likes?: ActivityPubOrderedCollection<string>
-  dislikes?: ActivityPubOrderedCollection<string>
-  shares?: ActivityPubOrderedCollection<string>
-  comments?: ActivityPubOrderedCollection<string>
+  likes: string
+  dislikes: string
+  shares: string
+  comments: string
   attributedTo: ActivityPubAttributedTo[]
   to?: string[]
   cc?: string[]

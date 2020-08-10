@@ -1,0 +1,12 @@
+@import '_variables';
+@import '_mixins';
+
+.delete-me {
+  font-size: 15px;
+
+  button {
+    @include peertube-button;
+    @include danger-button;
+    @include disable-outline;
+  }
+}

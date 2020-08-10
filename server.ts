@@ -1,8 +1,7 @@
-// FIXME: https://github.com/nodejs/node/pull/16853
-require('tls').DEFAULT_ECDH_CURVE = 'auto'
+import { registerTSPaths } from './server/helpers/register-ts-paths'
+registerTSPaths()
 
 import { isTestInstance } from './server/helpers/core-utils'
-
 if (isTestInstance()) {
   require('source-map-support').install()
 }
@@ -10,14 +9,13 @@ if (isTestInstance()) {
 // ----------- Node modules -----------
 import * as bodyParser from 'body-parser'
 import * as express from 'express'
-import * as http from 'http'
 import * as morgan from 'morgan'
-import * as path from 'path'
-import * as bitTorrentTracker from 'bittorrent-tracker'
 import * as cors from 'cors'
-import { Server as WebSocketServer } from 'ws'
-
-const TrackerServer = bitTorrentTracker.Server
+import * as cookieParser from 'cookie-parser'
+import * as helmet from 'helmet'
+import * as useragent from 'useragent'
+import * as anonymize from 'ip-anonymize'
+import * as cli from 'commander'
 
 process.title = 'peertube'
 
@@ -25,11 +23,12 @@ process.title = 'peertube'
 const app = express()
 
 // ----------- Core checker -----------
-import { checkMissedConfig, checkFFmpeg, checkConfig } from './server/initializers/checker'
+import { checkMissedConfig, checkFFmpeg, checkNodeVersion } from './server/initializers/checker-before-init'
 
 // Do not use barrels because we don't want to load all modules here (we need to initialize database first)
+import { CONFIG } from './server/initializers/config'
+import { API_VERSION, FILES_CACHE, WEBSERVER, loadLanguages } from './server/initializers/constants'
 import { logger } from './server/helpers/logger'
-import { ACCEPT_HEADERS, API_VERSION, CONFIG, STATIC_PATHS } from './server/initializers/constants'
 
 const missed = checkMissedConfig()
 if (missed.length !== 0) {
@@ -43,6 +42,10 @@ checkFFmpeg(CONFIG)
     process.exit(-1)
   })
 
+checkNodeVersion()
+
+import { checkConfig, checkActivityPubUrls } from './server/initializers/checker-after-init'
+
 const errorMessage = checkConfig()
 if (errorMessage !== null) {
   throw new Error(errorMessage)
@@ -51,6 +54,19 @@ if (errorMessage !== null) {
 // Trust our proxy (IP forwarding...)
 app.set('trust proxy', CONFIG.TRUST_PROXY)
 
+// Security middleware
+import { baseCSP } from './server/middlewares/csp'
+
+if (CONFIG.CSP.ENABLED) {
+  app.use(baseCSP)
+  app.use(helmet({
+    frameguard: {
+      action: 'deny' // we only allow it for /videos/embed, see server/controllers/client.ts
+    },
+    hsts: false
+  }))
+}
+
 // ----------- Database -----------
 
 // Initialize database and models
@@ -58,78 +74,103 @@ import { initDatabaseModels } from './server/initializers/database'
 import { migrate } from './server/initializers/migrator'
 migrate()
   .then(() => initDatabaseModels(false))
-  .then(() => onDatabaseInitDone())
+  .then(() => startApplication())
+  .catch(err => {
+    logger.error('Cannot start application.', { err })
+    process.exit(-1)
+  })
+
+// ----------- Initialize -----------
+loadLanguages()
 
 // ----------- PeerTube modules -----------
-import { installApplication } from './server/initializers'
+import { installApplication } from './server/initializers/installer'
 import { Emailer } from './server/lib/emailer'
 import { JobQueue } from './server/lib/job-queue'
-import { VideosPreviewCache } from './server/lib/cache'
-import { apiRouter, clientsRouter, staticRouter, servicesRouter, webfingerRouter, activityPubRouter } from './server/controllers'
+import { VideosPreviewCache, VideosCaptionCache } from './server/lib/files-cache'
+import {
+  activityPubRouter,
+  apiRouter,
+  clientsRouter,
+  feedsRouter,
+  staticRouter,
+  lazyStaticRouter,
+  servicesRouter,
+  pluginsRouter,
+  webfingerRouter,
+  trackerRouter,
+  createWebsocketTrackerServer, botsRouter
+} from './server/controllers'
+import { advertiseDoNotTrack } from './server/middlewares/dnt'
 import { Redis } from './server/lib/redis'
-import { BadActorFollowScheduler } from './server/lib/schedulers/bad-actor-follow-scheduler'
+import { ActorFollowScheduler } from './server/lib/schedulers/actor-follow-scheduler'
+import { RemoveOldViewsScheduler } from './server/lib/schedulers/remove-old-views-scheduler'
 import { RemoveOldJobsScheduler } from './server/lib/schedulers/remove-old-jobs-scheduler'
+import { UpdateVideosScheduler } from './server/lib/schedulers/update-videos-scheduler'
+import { YoutubeDlUpdateScheduler } from './server/lib/schedulers/youtube-dl-update-scheduler'
+import { VideosRedundancyScheduler } from './server/lib/schedulers/videos-redundancy-scheduler'
+import { RemoveOldHistoryScheduler } from './server/lib/schedulers/remove-old-history-scheduler'
+import { AutoFollowIndexInstances } from './server/lib/schedulers/auto-follow-index-instances'
+import { isHTTPSignatureDigestValid } from './server/helpers/peertube-crypto'
+import { PeerTubeSocket } from './server/lib/peertube-socket'
+import { updateStreamingPlaylistsInfohashesIfNeeded } from './server/lib/hls'
+import { PluginsCheckScheduler } from './server/lib/schedulers/plugins-check-scheduler'
+import { Hooks } from './server/lib/plugins/hooks'
+import { PluginManager } from './server/lib/plugins/plugin-manager'
 
 // ----------- Command line -----------
+
+cli
+  .option('--no-client', 'Start PeerTube without client interface')
+  .option('--no-plugins', 'Start PeerTube without plugins/themes enabled')
+  .parse(process.argv)
 
 // ----------- App -----------
 
 // Enable CORS for develop
 if (isTestInstance()) {
-  app.use((req, res, next) => {
-    // These routes have already cors
-    if (
-      req.path.indexOf(STATIC_PATHS.TORRENTS) === -1 &&
-      req.path.indexOf(STATIC_PATHS.WEBSEED) === -1
-    ) {
-      return (cors({
-        origin: 'http://localhost:3000',
-        exposedHeaders: 'Retry-After',
-        credentials: true
-      }))(req, res, next)
-    }
-
-    return next()
-  })
+  app.use(cors({
+    origin: '*',
+    exposedHeaders: 'Retry-After',
+    credentials: true
+  }))
 }
 
 // For the logger
+morgan.token<express.Request>('remote-addr', req => {
+  if (CONFIG.LOG.ANONYMIZE_IP === true || req.get('DNT') === '1') {
+    return anonymize(req.ip, 16, 16)
+  }
+
+  return req.ip
+})
+morgan.token<express.Request>('user-agent', req => {
+  if (req.get('DNT') === '1') {
+    return useragent.parse(req.get('user-agent')).family
+  }
+
+  return req.get('user-agent')
+})
 app.use(morgan('combined', {
   stream: { write: logger.info.bind(logger) }
 }))
+
 // For body requests
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json({
   type: [ 'application/json', 'application/*+json' ],
-  limit: '500kb'
+  limit: '500kb',
+  verify: (req: express.Request, _, buf: Buffer) => {
+    const valid = isHTTPSignatureDigestValid(buf, req)
+    if (valid !== true) throw new Error('Invalid digest')
+  }
 }))
 
-// ----------- Tracker -----------
+// Cookies
+app.use(cookieParser())
 
-const trackerServer = new TrackerServer({
-  http: false,
-  udp: false,
-  ws: false,
-  dht: false
-})
-
-trackerServer.on('error', function (err) {
-  logger.error('Error in websocket tracker.', err)
-})
-
-trackerServer.on('warning', function (err) {
-  logger.error('Warning in websocket tracker.', err)
-})
-
-const server = http.createServer(app)
-const wss = new WebSocketServer({ server: server, path: '/tracker/socket' })
-wss.on('connection', function (ws) {
-  trackerServer.onWebSocketConnection(ws)
-})
-
-const onHttpRequest = trackerServer.onHttpRequest.bind(trackerServer)
-app.get('/tracker/announce', (req, res) => onHttpRequest(req, res, { action: 'announce' }))
-app.get('/tracker/scrape', (req, res) => onHttpRequest(req, res, { action: 'scrape' }))
+// W3C DNT Tracking Status
+app.use(advertiseDoNotTrack)
 
 // ----------- Views, routes and static files -----------
 
@@ -140,23 +181,21 @@ app.use(apiRoute, apiRouter)
 // Services (oembed...)
 app.use('/services', servicesRouter)
 
-app.use('/', webfingerRouter)
-app.use('/', activityPubRouter)
+// Plugins & themes
+app.use('/', pluginsRouter)
 
-// Client files
-app.use('/', clientsRouter)
+app.use('/', activityPubRouter)
+app.use('/', feedsRouter)
+app.use('/', webfingerRouter)
+app.use('/', trackerRouter)
+app.use('/', botsRouter)
 
 // Static files
 app.use('/', staticRouter)
+app.use('/', lazyStaticRouter)
 
-// Always serve index client page (the client is a single page application, let it handle routing)
-app.use('/*', function (req, res) {
-  if (req.accepts(ACCEPT_HEADERS) === 'html') {
-    return res.sendFile(path.join(__dirname, '../client/dist/index.html'))
-  }
-
-  return res.status(404).end()
-})
+// Client files, last valid routes!
+if (cli.client) app.use('/', clientsRouter)
 
 // ----------- Errors -----------
 
@@ -173,36 +212,74 @@ app.use(function (err, req, res, next) {
     error = err.stack || err.message || err
   }
 
-  logger.error('Error in controller.', { error })
+  // Sequelize error
+  const sql = err.parent ? err.parent.sql : undefined
+
+  logger.error('Error in controller.', { err: error, sql })
   return res.status(err.status || 500).end()
 })
 
+const server = createWebsocketTrackerServer(app)
+
 // ----------- Run -----------
 
-function onDatabaseInitDone () {
+async function startApplication () {
   const port = CONFIG.LISTEN.PORT
+  const hostname = CONFIG.LISTEN.HOSTNAME
 
-  installApplication()
-    .then(() => {
-      // ----------- Make the server listening -----------
-      server.listen(port, () => {
-        // Emailer initialization and then job queue initialization
-        Emailer.Instance.init()
-        Emailer.Instance.checkConnectionOrDie()
-          .then(() => JobQueue.Instance.init())
+  await installApplication()
 
-        // Caches initializations
-        VideosPreviewCache.Instance.init(CONFIG.CACHE.PREVIEWS.SIZE)
-
-        // Enable Schedulers
-        BadActorFollowScheduler.Instance.enable()
-        RemoveOldJobsScheduler.Instance.enable()
-
-        // Redis initialization
-        Redis.Instance.init()
-
-        logger.info('Server listening on port %d', port)
-        logger.info('Web server: %s', CONFIG.WEBSERVER.URL)
-      })
+  // Check activity pub urls are valid
+  checkActivityPubUrls()
+    .catch(err => {
+      logger.error('Error in ActivityPub URLs checker.', { err })
+      process.exit(-1)
     })
+
+  // Email initialization
+  Emailer.Instance.init()
+
+  await Promise.all([
+    Emailer.Instance.checkConnectionOrDie(),
+    JobQueue.Instance.init()
+  ])
+
+  // Caches initializations
+  VideosPreviewCache.Instance.init(CONFIG.CACHE.PREVIEWS.SIZE, FILES_CACHE.PREVIEWS.MAX_AGE)
+  VideosCaptionCache.Instance.init(CONFIG.CACHE.VIDEO_CAPTIONS.SIZE, FILES_CACHE.VIDEO_CAPTIONS.MAX_AGE)
+
+  // Enable Schedulers
+  ActorFollowScheduler.Instance.enable()
+  RemoveOldJobsScheduler.Instance.enable()
+  UpdateVideosScheduler.Instance.enable()
+  YoutubeDlUpdateScheduler.Instance.enable()
+  VideosRedundancyScheduler.Instance.enable()
+  RemoveOldHistoryScheduler.Instance.enable()
+  RemoveOldViewsScheduler.Instance.enable()
+  PluginsCheckScheduler.Instance.enable()
+  AutoFollowIndexInstances.Instance.enable()
+
+  // Redis initialization
+  Redis.Instance.init()
+
+  PeerTubeSocket.Instance.init(server)
+
+  updateStreamingPlaylistsInfohashesIfNeeded()
+    .catch(err => logger.error('Cannot update streaming playlist infohashes.', { err }))
+
+  if (cli.plugins) await PluginManager.Instance.registerPluginsAndThemes()
+
+  // Make server listening
+  server.listen(port, hostname, () => {
+    logger.info('Server listening on %s:%d', hostname, port)
+    logger.info('Web server: %s', WEBSERVER.URL)
+
+    Hooks.runAction('action:application.listening')
+  })
+
+  process.on('exit', () => {
+    JobQueue.Instance.terminate()
+  })
+
+  process.on('SIGINT', () => process.exit(0))
 }

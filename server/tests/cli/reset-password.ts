@@ -1,28 +1,25 @@
 import 'mocha'
 
 import {
+  cleanupTests,
   createUser,
   execCLI,
-  flushTests,
+  flushAndRunServer,
   getEnvCli,
-  killallServers,
   login,
-  runServer,
   ServerInfo,
   setAccessTokensToServers
-} from '../utils'
+} from '../../../shared/extra-utils'
 
 describe('Test reset password scripts', function () {
   let server: ServerInfo
 
   before(async function () {
     this.timeout(30000)
-
-    await flushTests()
-    server = await runServer(1)
+    server = await flushAndRunServer(1)
     await setAccessTokensToServers([ server ])
 
-    await createUser(server.url, server.accessToken, 'user_1', 'super password')
+    await createUser({ url: server.url, accessToken: server.accessToken, username: 'user_1', password: 'super password' })
   })
 
   it('Should change the user password from CLI', async function () {
@@ -35,11 +32,6 @@ describe('Test reset password scripts', function () {
   })
 
   after(async function () {
-    killallServers([ server ])
-
-    // Keep the logs if the test failed
-    if (this['ok']) {
-      await flushTests()
-    }
+    await cleanupTests([ server ])
   })
 })

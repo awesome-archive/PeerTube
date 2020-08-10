@@ -1,6 +1,10 @@
+import { registerTSPaths } from '../server/helpers/register-ts-paths'
+registerTSPaths()
+
 import * as program from 'commander'
-import { initDatabaseModels } from '../server/initializers'
+import { initDatabaseModels } from '../server/initializers/database'
 import { UserModel } from '../server/models/account/user'
+import { isUserPasswordValid } from '../server/helpers/custom-validators/users'
 
 program
   .option('-u, --user [user]', 'User')
@@ -17,7 +21,7 @@ initDatabaseModels(true)
   })
   .then(user => {
     if (!user) {
-      console.error('User unknown.')
+      console.error('Unknown user.')
       process.exit(-1)
     }
 
@@ -36,6 +40,11 @@ initDatabaseModels(true)
 
     console.log('New password?')
     rl.on('line', function (password) {
+      if (!isUserPasswordValid(password)) {
+        console.error('New password is invalid.')
+        process.exit(-1)
+      }
+
       user.password = password
 
       user.save()
@@ -43,4 +52,8 @@ initDatabaseModels(true)
         .catch(err => console.error(err))
         .finally(() => process.exit(0))
     })
+  })
+  .catch(err => {
+    console.error(err)
+    process.exit(-1)
   })

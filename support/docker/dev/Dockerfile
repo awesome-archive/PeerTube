@@ -1,34 +1,46 @@
-FROM janx/ubuntu-dev
-MAINTAINER Jan Keromnes <janx@linux.com>
+FROM ubuntu:bionic
+
+# Avoid tzdata interactive dialog
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install PeerTube's dependencies.
 # Packages are from https://github.com/Chocobozzz/PeerTube#dependencies
-RUN sudo apt-get update -q && sudo apt-get install -qy \
- ffmpeg \
- postgresql \
- openssl
+RUN apt-get update -q && apt-get install -qy \
+      curl \
+      ffmpeg \
+      g++ \
+      git \
+      gnupg \
+      make \
+      nano \
+      openssl \
+      postgresql \
+      postgresql-contrib \
+      redis-server \
+    && curl -sL https://deb.nodesource.com/setup_10.x | bash - \
+    && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - \
+    && echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list \
+    && apt-get update \
+    && apt-get install -qy nodejs yarn \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download PeerTube's source code.
 RUN git clone -b develop https://github.com/Chocobozzz/PeerTube /home/user/PeerTube
 WORKDIR /home/user/PeerTube
 
-# Configure Cloud9 IDE to use PeerTube's source directory as workspace (-w).
-RUN sudo sed -i "s/-w \/home\/user/-w \/home\/user\/PeerTube/" /etc/supervisord.conf
+# Copy postgresql setup script
+COPY setup_postgres.sql /tmp/
 
-# Install dependencies.
-RUN yarn install --pure-lockfile
+# Install Node.js dependencies and setup PostgreSQL
+RUN yarn install --pure-lockfile \
+    && service postgresql start \
+    && su postgres -c "psql --file=/tmp/setup_postgres.sql"
 
-# Configure Janitor for PeerTube.
-ADD janitor.json /home/user/
-RUN sudo chown user:user /home/user/janitor.json
+# Expose PeerTube sources as a volume
+VOLUME /home/user/PeerTube
 
-# Configure and build PeerTube.
-ADD create_user.sql /tmp/
-RUN sudo service postgresql start \
- && sudo -u postgres psql --file=/tmp/create_user.sql \
- && npm run build
-
-ADD supervisord.conf /tmp/supervisord-extra.conf
-RUN cat /tmp/supervisord-extra.conf | sudo tee -a /etc/supervisord.conf
-
+# Expose API and frontend
 EXPOSE 3000 9000
+
+# Start PostgreSQL and Redis
+CMD ["service postgresql start && redis-server"]

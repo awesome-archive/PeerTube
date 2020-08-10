@@ -1,21 +1,27 @@
 import * as express from 'express'
 import { Activity } from '../../../shared/models/activitypub/activity'
 import { VideoPrivacy } from '../../../shared/models/videos'
-import { activityPubCollectionPagination } from '../../helpers/activitypub'
-import { pageToStartAndCount } from '../../helpers/core-utils'
+import { activityPubCollectionPagination, activityPubContextify } from '../../helpers/activitypub'
 import { logger } from '../../helpers/logger'
-import { ACTIVITY_PUB } from '../../initializers/constants'
-import { announceActivityData, createActivityData } from '../../lib/activitypub/send'
-import { buildAudience } from '../../lib/activitypub/send/misc'
-import { asyncMiddleware, localAccountValidator } from '../../middlewares'
-import { AccountModel } from '../../models/account/account'
-import { ActorModel } from '../../models/activitypub/actor'
+import { buildAnnounceActivity, buildCreateActivity } from '../../lib/activitypub/send'
+import { buildAudience } from '../../lib/activitypub/audience'
+import { asyncMiddleware, localAccountValidator, localVideoChannelValidator } from '../../middlewares'
 import { VideoModel } from '../../models/video/video'
+import { activityPubResponse } from './utils'
+import { MActorLight } from '@server/types/models'
+import { apPaginationValidator } from '../../middlewares/validators/activitypub'
 
 const outboxRouter = express.Router()
 
 outboxRouter.get('/accounts/:name/outbox',
+  apPaginationValidator,
   localAccountValidator,
+  asyncMiddleware(outboxController)
+)
+
+outboxRouter.get('/video-channels/:name/outbox',
+  apPaginationValidator,
+  localVideoChannelValidator,
   asyncMiddleware(outboxController)
 )
 
@@ -27,49 +33,43 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function outboxController (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const account: AccountModel = res.locals.account
-  const actor = account.Actor
+async function outboxController (req: express.Request, res: express.Response) {
+  const accountOrVideoChannel = res.locals.account || res.locals.videoChannel
+  const actor = accountOrVideoChannel.Actor
+  const actorOutboxUrl = actor.url + '/outbox'
 
-  const page = req.query.page || 1
-  const { start, count } = pageToStartAndCount(page, ACTIVITY_PUB.COLLECTION_ITEMS_PER_PAGE)
+  logger.info('Receiving outbox request for %s.', actorOutboxUrl)
 
+  const handler = (start: number, count: number) => buildActivities(actor, start, count)
+  const json = await activityPubCollectionPagination(actorOutboxUrl, handler, req.query.page, req.query.size)
+
+  return activityPubResponse(activityPubContextify(json), res)
+}
+
+async function buildActivities (actor: MActorLight, start: number, count: number) {
   const data = await VideoModel.listAllAndSharedByActorForOutbox(actor.id, start, count)
   const activities: Activity[] = []
 
-  // Avoid too many SQL requests
-  const actors = data.data.map(v => v.VideoChannel.Account.Actor)
-  actors.push(actor)
-
-  const followersMatrix = await ActorModel.getActorsFollowerSharedInboxUrls(actors, undefined)
-
   for (const video of data.data) {
     const byActor = video.VideoChannel.Account.Actor
-    const createActivityAudience = buildAudience(followersMatrix[byActor.id], video.privacy === VideoPrivacy.PUBLIC)
+    const createActivityAudience = buildAudience([ byActor.followersUrl ], video.privacy === VideoPrivacy.PUBLIC)
 
     // This is a shared video
     if (video.VideoShares !== undefined && video.VideoShares.length !== 0) {
       const videoShare = video.VideoShares[0]
-      const announceAudience = buildAudience(followersMatrix[actor.id], video.privacy === VideoPrivacy.PUBLIC)
-      const announceActivity = await announceActivityData(videoShare.url, actor, video.url, undefined, announceAudience)
+      const announceActivity = buildAnnounceActivity(videoShare.url, actor, video.url, createActivityAudience)
 
       activities.push(announceActivity)
     } else {
       const videoObject = video.toActivityPubObject()
-      const createActivity = await createActivityData(video.url, byActor, videoObject, undefined, createActivityAudience)
+      const createActivity = buildCreateActivity(video.url, byActor, videoObject, createActivityAudience)
 
       activities.push(createActivity)
     }
   }
 
-  const newResult = {
+  return {
     data: activities,
     total: data.total
   }
-  const actorOutboxUrl = account.Actor.url + '/outbox'
-  const json = activityPubCollectionPagination(actorOutboxUrl, page, newResult)
-
-  logger.info('Receiving outbox request for %s.', actorOutboxUrl)
-
-  return res.json(json).end()
 }

@@ -1,74 +1,102 @@
-import { CONFIG } from '../../initializers'
-import { ActorModel } from '../../models/activitypub/actor'
-import { ActorFollowModel } from '../../models/activitypub/actor-follow'
-import { VideoModel } from '../../models/video/video'
-import { VideoAbuseModel } from '../../models/video/video-abuse'
-import { VideoCommentModel } from '../../models/video/video-comment'
+import { WEBSERVER } from '../../initializers/constants'
+import {
+  MActor,
+  MActorFollowActors,
+  MActorId,
+  MActorUrl,
+  MCommentId,
+  MVideoId,
+  MVideoUrl,
+  MVideoUUID,
+  MAbuseId
+} from '../../types/models'
+import { MVideoPlaylist, MVideoPlaylistUUID } from '../../types/models/video/video-playlist'
+import { MVideoFileVideoUUID } from '../../types/models/video/video-file'
+import { MStreamingPlaylist } from '../../types/models/video/video-streaming-playlist'
 
-function getVideoActivityPubUrl (video: VideoModel) {
-  return CONFIG.WEBSERVER.URL + '/videos/watch/' + video.uuid
+function getVideoActivityPubUrl (video: MVideoUUID) {
+  return WEBSERVER.URL + '/videos/watch/' + video.uuid
 }
 
-function getVideoCommentActivityPubUrl (video: VideoModel, videoComment: VideoCommentModel) {
-  return CONFIG.WEBSERVER.URL + '/videos/watch/' + video.uuid + '/comments/' + videoComment.id
+function getVideoPlaylistActivityPubUrl (videoPlaylist: MVideoPlaylist) {
+  return WEBSERVER.URL + '/video-playlists/' + videoPlaylist.uuid
 }
 
-function getVideoChannelActivityPubUrl (videoChannelUUID: string) {
-  return CONFIG.WEBSERVER.URL + '/video-channels/' + videoChannelUUID
+function getVideoPlaylistElementActivityPubUrl (videoPlaylist: MVideoPlaylistUUID, video: MVideoUUID) {
+  return WEBSERVER.URL + '/video-playlists/' + videoPlaylist.uuid + '/' + video.uuid
+}
+
+function getVideoCacheFileActivityPubUrl (videoFile: MVideoFileVideoUUID) {
+  const suffixFPS = videoFile.fps && videoFile.fps !== -1 ? '-' + videoFile.fps : ''
+
+  return `${WEBSERVER.URL}/redundancy/videos/${videoFile.Video.uuid}/${videoFile.resolution}${suffixFPS}`
+}
+
+function getVideoCacheStreamingPlaylistActivityPubUrl (video: MVideoUUID, playlist: MStreamingPlaylist) {
+  return `${WEBSERVER.URL}/redundancy/streaming-playlists/${playlist.getStringType()}/${video.uuid}`
+}
+
+function getVideoCommentActivityPubUrl (video: MVideoUUID, videoComment: MCommentId) {
+  return WEBSERVER.URL + '/videos/watch/' + video.uuid + '/comments/' + videoComment.id
+}
+
+function getVideoChannelActivityPubUrl (videoChannelName: string) {
+  return WEBSERVER.URL + '/video-channels/' + videoChannelName
 }
 
 function getAccountActivityPubUrl (accountName: string) {
-  return CONFIG.WEBSERVER.URL + '/accounts/' + accountName
+  return WEBSERVER.URL + '/accounts/' + accountName
 }
 
-function getVideoAbuseActivityPubUrl (videoAbuse: VideoAbuseModel) {
-  return CONFIG.WEBSERVER.URL + '/admin/video-abuses/' + videoAbuse.id
+function getAbuseActivityPubUrl (abuse: MAbuseId) {
+  return WEBSERVER.URL + '/admin/abuses/' + abuse.id
 }
 
-function getVideoViewActivityPubUrl (byActor: ActorModel, video: VideoModel) {
-  return video.url + '/views/' + byActor.uuid + '/' + new Date().toISOString()
+function getVideoViewActivityPubUrl (byActor: MActorUrl, video: MVideoId) {
+  return byActor.url + '/views/videos/' + video.id + '/' + new Date().toISOString()
 }
 
-function getVideoLikeActivityPubUrl (byActor: ActorModel, video: VideoModel) {
+function getVideoLikeActivityPubUrl (byActor: MActorUrl, video: MVideoId) {
   return byActor.url + '/likes/' + video.id
 }
 
-function getVideoDislikeActivityPubUrl (byActor: ActorModel, video: VideoModel) {
+function getVideoDislikeActivityPubUrl (byActor: MActorUrl, video: MVideoId) {
   return byActor.url + '/dislikes/' + video.id
 }
 
-function getVideoSharesActivityPubUrl (video: VideoModel) {
+function getVideoSharesActivityPubUrl (video: MVideoUrl) {
   return video.url + '/announces'
 }
 
-function getVideoCommentsActivityPubUrl (video: VideoModel) {
+function getVideoCommentsActivityPubUrl (video: MVideoUrl) {
   return video.url + '/comments'
 }
 
-function getVideoLikesActivityPubUrl (video: VideoModel) {
+function getVideoLikesActivityPubUrl (video: MVideoUrl) {
   return video.url + '/likes'
 }
 
-function getVideoDislikesActivityPubUrl (video: VideoModel) {
+function getVideoDislikesActivityPubUrl (video: MVideoUrl) {
   return video.url + '/dislikes'
 }
 
-function getActorFollowActivityPubUrl (actorFollow: ActorFollowModel) {
-  const me = actorFollow.ActorFollower
-  const following = actorFollow.ActorFollowing
-
-  return me.url + '/follows/' + following.id
+function getActorFollowActivityPubUrl (follower: MActor, following: MActorId) {
+  return follower.url + '/follows/' + following.id
 }
 
-function getActorFollowAcceptActivityPubUrl (actorFollow: ActorFollowModel) {
+function getActorFollowAcceptActivityPubUrl (actorFollow: MActorFollowActors) {
   const follower = actorFollow.ActorFollower
   const me = actorFollow.ActorFollowing
 
   return follower.url + '/accepts/follows/' + me.id
 }
 
-function getAnnounceActivityPubUrl (originalUrl: string, byActor: ActorModel) {
-  return originalUrl + '/announces/' + byActor.id
+function getActorFollowRejectActivityPubUrl (follower: MActorUrl, following: MActorId) {
+  return follower.url + '/rejects/follows/' + following.id
+}
+
+function getVideoAnnounceActivityPubUrl (byActor: MActorId, video: MVideoUrl) {
+  return video.url + '/announces/' + byActor.id
 }
 
 function getDeleteActivityPubUrl (originalUrl: string) {
@@ -85,21 +113,26 @@ function getUndoActivityPubUrl (originalUrl: string) {
 
 export {
   getVideoActivityPubUrl,
+  getVideoPlaylistElementActivityPubUrl,
+  getVideoPlaylistActivityPubUrl,
+  getVideoCacheStreamingPlaylistActivityPubUrl,
   getVideoChannelActivityPubUrl,
   getAccountActivityPubUrl,
-  getVideoAbuseActivityPubUrl,
+  getAbuseActivityPubUrl,
   getActorFollowActivityPubUrl,
   getActorFollowAcceptActivityPubUrl,
-  getAnnounceActivityPubUrl,
+  getVideoAnnounceActivityPubUrl,
   getUpdateActivityPubUrl,
   getUndoActivityPubUrl,
   getVideoViewActivityPubUrl,
   getVideoLikeActivityPubUrl,
   getVideoDislikeActivityPubUrl,
+  getActorFollowRejectActivityPubUrl,
   getVideoCommentActivityPubUrl,
   getDeleteActivityPubUrl,
   getVideoSharesActivityPubUrl,
   getVideoCommentsActivityPubUrl,
   getVideoLikesActivityPubUrl,
-  getVideoDislikesActivityPubUrl
+  getVideoDislikesActivityPubUrl,
+  getVideoCacheFileActivityPubUrl
 }

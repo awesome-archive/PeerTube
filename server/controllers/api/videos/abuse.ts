@@ -1,33 +1,53 @@
 import * as express from 'express'
-import { UserRight, VideoAbuseCreate } from '../../../../shared'
-import { retryTransactionWrapper } from '../../../helpers/database-utils'
-import { logger } from '../../../helpers/logger'
-import { getFormattedObjects } from '../../../helpers/utils'
-import { sequelizeTypescript } from '../../../initializers'
-import { sendVideoAbuse } from '../../../lib/activitypub/send'
+import { AbuseModel } from '@server/models/abuse/abuse'
+import { getServerActor } from '@server/models/application/application'
+import { AbuseCreate, UserRight, VideoAbuseCreate } from '../../../../shared'
 import {
-  asyncMiddleware, authenticate, ensureUserHasRight, paginationValidator, setDefaultSort, setDefaultPagination, videoAbuseReportValidator,
-  videoAbusesSortValidator
+  abusesSortValidator,
+  asyncMiddleware,
+  asyncRetryTransactionMiddleware,
+  authenticate,
+  ensureUserHasRight,
+  paginationValidator,
+  setDefaultPagination,
+  setDefaultSort,
+  videoAbuseGetValidator,
+  videoAbuseListValidator,
+  videoAbuseReportValidator,
+  videoAbuseUpdateValidator
 } from '../../../middlewares'
-import { AccountModel } from '../../../models/account/account'
-import { VideoModel } from '../../../models/video/video'
-import { VideoAbuseModel } from '../../../models/video/video-abuse'
+import { deleteAbuse, reportAbuse, updateAbuse } from '../abuse'
+
+// FIXME: deprecated in 2.3. Remove this controller
 
 const abuseVideoRouter = express.Router()
 
 abuseVideoRouter.get('/abuse',
   authenticate,
-  ensureUserHasRight(UserRight.MANAGE_VIDEO_ABUSES),
+  ensureUserHasRight(UserRight.MANAGE_ABUSES),
   paginationValidator,
-  videoAbusesSortValidator,
+  abusesSortValidator,
   setDefaultSort,
   setDefaultPagination,
+  videoAbuseListValidator,
   asyncMiddleware(listVideoAbuses)
 )
-abuseVideoRouter.post('/:id/abuse',
+abuseVideoRouter.put('/:videoId/abuse/:id',
+  authenticate,
+  ensureUserHasRight(UserRight.MANAGE_ABUSES),
+  asyncMiddleware(videoAbuseUpdateValidator),
+  asyncRetryTransactionMiddleware(updateVideoAbuse)
+)
+abuseVideoRouter.post('/:videoId/abuse',
   authenticate,
   asyncMiddleware(videoAbuseReportValidator),
-  asyncMiddleware(reportVideoAbuseRetryWrapper)
+  asyncRetryTransactionMiddleware(reportVideoAbuse)
+)
+abuseVideoRouter.delete('/:videoId/abuse/:id',
+  authenticate,
+  ensureUserHasRight(UserRight.MANAGE_ABUSES),
+  asyncMiddleware(videoAbuseGetValidator),
+  asyncRetryTransactionMiddleware(deleteVideoAbuse)
 )
 
 // ---------------------------------------------------------------------------
@@ -38,43 +58,57 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function listVideoAbuses (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const resultList = await VideoAbuseModel.listForApi(req.query.start, req.query.count, req.query.sort)
+async function listVideoAbuses (req: express.Request, res: express.Response) {
+  const user = res.locals.oauth.token.user
+  const serverActor = await getServerActor()
 
-  return res.json(getFormattedObjects(resultList.data, resultList.total))
+  const resultList = await AbuseModel.listForAdminApi({
+    start: req.query.start,
+    count: req.query.count,
+    sort: req.query.sort,
+    id: req.query.id,
+    filter: 'video',
+    predefinedReason: req.query.predefinedReason,
+    search: req.query.search,
+    state: req.query.state,
+    videoIs: req.query.videoIs,
+    searchReporter: req.query.searchReporter,
+    searchReportee: req.query.searchReportee,
+    searchVideo: req.query.searchVideo,
+    searchVideoChannel: req.query.searchVideoChannel,
+    serverAccountId: serverActor.Account.id,
+    user
+  })
+
+  return res.json({
+    total: resultList.total,
+    data: resultList.data.map(d => d.toFormattedAdminJSON())
+  })
 }
 
-async function reportVideoAbuseRetryWrapper (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const options = {
-    arguments: [ req, res ],
-    errorMessage: 'Cannot report abuse to the video with many retries.'
-  }
+async function updateVideoAbuse (req: express.Request, res: express.Response) {
+  return updateAbuse(req, res)
+}
 
-  await retryTransactionWrapper(reportVideoAbuse, options)
-
-  return res.type('json').status(204).end()
+async function deleteVideoAbuse (req: express.Request, res: express.Response) {
+  return deleteAbuse(req, res)
 }
 
 async function reportVideoAbuse (req: express.Request, res: express.Response) {
-  const videoInstance = res.locals.video as VideoModel
-  const reporterAccount = res.locals.oauth.token.User.Account as AccountModel
-  const body: VideoAbuseCreate = req.body
+  const oldBody = req.body as VideoAbuseCreate
 
-  const abuseToCreate = {
-    reporterAccountId: reporterAccount.id,
-    reason: body.reason,
-    videoId: videoInstance.id
-  }
+  req.body = {
+    accountId: res.locals.videoAll.VideoChannel.accountId,
 
-  await sequelizeTypescript.transaction(async t => {
-    const videoAbuseInstance = await VideoAbuseModel.create(abuseToCreate, { transaction: t })
-    videoAbuseInstance.Video = videoInstance
+    reason: oldBody.reason,
+    predefinedReasons: oldBody.predefinedReasons,
 
-    // We send the video abuse to the origin server
-    if (videoInstance.isOwned() === false) {
-      await sendVideoAbuse(reporterAccount.Actor, videoAbuseInstance, videoInstance, t)
+    video: {
+      id: res.locals.videoAll.id,
+      startAt: oldBody.startAt,
+      endAt: oldBody.endAt
     }
-  })
+  } as AbuseCreate
 
-  logger.info('Abuse report for video %s created.', videoInstance.name)
+  return reportAbuse(req, res)
 }

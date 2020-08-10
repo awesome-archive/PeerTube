@@ -1,16 +1,50 @@
 @import '_variables';
 @import '_mixins';
 
+.menu-wrapper {
+  position: fixed;
+  height: calc(100vh - #{$header-height});
+  padding: 0;
+  width: $menu-width;
+  z-index: z(menu);
+  scrollbar-color: pvar(--actionButtonColor) pvar(--menuBackgroundColor);
+}
+
 menu {
-  background-color: $black-background;
+  @include ellipsis;
+
+  background-color: pvar(--menuBackgroundColor);
   margin: 0;
   padding: 0;
   height: 100%;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  z-index: 1000;
-  color: $menu-color;
+  overflow-x: hidden;
+  color: pvar(--menuForegroundColor);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+
+  &:focus, &:hover {
+    overflow-y: auto;
+  }
+
+  @media not all and (hover: hover) and (pointer: fine) {
+    overflow-y: auto;
+  }
+
+  &.logged-in {
+    .panel-block {
+      margin-bottom: 20px;
+    }
+
+    .block-title {
+      margin-bottom: 15px;
+    }
+  }
+
+  .top-menu {
+    flex-grow: 1;
+    width: $menu-width;
+  }
 
   .logged-in-block {
     height: 100px;
@@ -18,43 +52,45 @@ menu {
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 35px;
-
-    img {
-      @include avatar(34px);
-
-      margin-left: 20px;
-      margin-right: 10px;
-    }
+    margin-bottom: 20px;
 
     .logged-in-info {
+      @include ellipsis;
+
       flex-grow: 1;
 
-      .logged-in-username {
+      .logged-in-display-name {
         font-size: 16px;
         font-weight: $font-semibold;
-        color: $menu-color;
+        color: pvar(--menuForegroundColor);
         cursor: pointer;
 
         @include disable-default-a-behaviour;
       }
 
-      .logged-in-email {
+      .logged-in-username {
+        @include ellipsis;
+
         font-size: 13px;
         color: #C6C6C6;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
         max-width: 140px;
+        cursor: pointer;
       }
     }
 
     .logged-in-more {
       margin-right: 20px;
 
-      .glyphicon {
+      my-global-icon.dropdown-toggle {
         cursor: pointer;
-        font-size: 18px;
+
+        &::after {
+          border: none;
+        }
+
+        ::ng-deep {
+          @include apply-svg-color(pvar(--menuForegroundColor));
+        }
       }
     }
   }
@@ -95,64 +131,227 @@ menu {
   }
 
   .panel-block {
-    margin-bottom: 45px;
+    margin-bottom: 15px;
 
     a {
-      display: flex;
-      align-items: center;
-      padding-left: 26px;
-      color: $menu-color;
-      cursor: pointer;
-      height: 40px;
-      font-size: 16px;
-      transition: background-color .1s ease-in-out;
       @include disable-default-a-behaviour;
 
-      &:hover {
+      display: flex;
+      align-items: center;
+      padding-left: $menu-lateral-padding;
+      color: pvar(--menuForegroundColor);
+      cursor: pointer;
+      min-height: 40px;
+      font-size: 16px;
+      transition: background-color .1s ease-in-out;
+      white-space: normal;
+      word-break: break-word;
+      padding-right: 20px;
+
+      &.active {
         background-color: rgba(255, 255, 255, 0.15);
+      }
+
+      &:hover, &.focus-visible {
+        background-color: rgba(255, 255, 255, 0.10);
+      }
+
+      my-global-icon {
+        @include apply-svg-color(#808080);
+
+        display: flex;
+        width: 22px;
+        height: 22px;
+        margin-right: 18px;
+
+        &[iconName="playlists"] {
+          height: 24px;
+          width: 24px;
+
+          margin-right: 16px;
+        }
+
+        &[iconName="videos"] {
+          position: relative;
+          right: -1px;
+        }
       }
 
       .icon {
         @include icon(22px);
 
         margin-right: 18px;
+      }
+    }
+  }
 
-        &.icon-videos-trending {
-          position: relative;
-          top: -2px;
-          background-image: url('../../assets/images/menu/trending.svg');
-        }
+  .footer {
+    width: $menu-width;
+    padding-bottom: 15px;
 
-        &.icon-videos-recently-added {
-          width: 23px;
-          height: 23px;
-          position: relative;
-          top: -1px;
-          background-image: url('../../assets/images/menu/recently-added.svg');
-        }
+    .bottom-links {
+      display: flex;
+      flex-direction: column;
+      padding: 0 $menu-lateral-padding;
+    }
 
-        &.icon-videos-local {
-          width: 23px;
-          height: 23px;
-          position: relative;
-          top: -1px;
-          background-image: url('../../assets/images/menu/home.svg');
-        }
+    $footer-links-base-opacity: .8;
 
-        &.icon-administration {
-          width: 23px;
-          height: 23px;
+    .footer-links {
+      &, > div {
+        display: flex;
+        flex-wrap: wrap;
+      }
 
-          background-image: url('../../assets/images/menu/administration.svg');
-        }
+      a, span[role=button] {
+        display: inline-block;
+        text-decoration: none;
+        color: pvar(--mainBackgroundColor);
+        opacity: $footer-links-base-opacity;
+        white-space: nowrap;
+        font-size: 90%;
+        font-weight: 500;
+        line-height: 1.4rem;
+        margin-right: 8px;
 
-        &.icon-about  {
-          width: 23px;
-          height: 23px;
+        &.inline-global-icon {
+          display: inline-flex;
+          align-items: center;
+          white-space: nowrap;
+          height: 1.4rem;
 
-          background-image: url('../../assets/images/menu/about.svg');
+          my-global-icon {
+            @include apply-svg-color(pvar(--mainBackgroundColor));
+
+            display: flex;
+            width: auto;
+            height: 90%;
+            margin-right: .2rem;
+          }
         }
       }
     }
+
+    .footer-copyleft small a {
+      @include disable-default-a-behaviour;
+
+      color: pvar(--mainBackgroundColor);
+      opacity: $footer-links-base-opacity - .2;
+    }
+  }
+}
+
+.dropdown-menu {
+  width: calc(100% + 40px);
+}
+
+.dropdown-item {
+  @include dropdown-with-icon-item;
+
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+
+  i.glyphicon-menu-right {
+    opacity: .4;
+  }
+
+  my-global-icon {
+    &[iconName="cog"],
+    &[iconName="sign-out"] {
+      position: relative;
+      right: -2px;
+      height: 20px;
+      width: 20px;
+    }
+  }
+
+  my-global-icon.not-displayed {
+    display: none;
+  }
+
+  &:hover {
+    my-global-icon.hover-display-toggle.not-displayed {
+      display: inherit;
+    }
+    my-global-icon.hover-display-toggle {
+      display: none;
+    }
+  }
+}
+
+.more-settings {
+  text-transform: uppercase;
+  font-size: 80%;
+  color: #6c757d;
+}
+
+.icon {
+  @include disable-outline;
+  @include icon(22px);
+  opacity: 0.8;
+
+  &.icon-shortcuts  {
+    position: relative;
+    top: -1px;
+    margin-right: 10px;
+
+    background-image: url('../../assets/images/misc/keyboard.png');
+  }
+}
+
+input[type=checkbox]{
+  position: absolute;
+  visibility: hidden;
+}
+
+label {
+  cursor: pointer;
+  text-indent: -9999px;
+  width: 35px;
+  height: 20px;
+  background: #cccccc;
+  display: block;
+  border-radius: 100px;
+  position: relative;
+  margin: 0;
+
+  &:after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 14px;
+    height: 14px;
+    background: pvar(--mainBackgroundColor);
+    border-radius: 50%;
+    transition: 0.3s ease-out;
+  }
+
+  &:active:after {
+    width: 40px;
+  }
+}
+
+input:checked + label {
+  background: pvar(--mainColor);
+
+  &:after {
+    left: calc(100% - 3px);
+    transform: translateX(-100%);
+  }
+}
+
+@media screen and (max-width: $mobile-view) {
+  .menu-wrapper {
+    width: 100% !important;
+
+    menu {
+      overflow-y: auto;
+    }
+  }
+
+  .top-menu, .footer {
+    width: 100% !important;
   }
 }

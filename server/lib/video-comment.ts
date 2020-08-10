@@ -1,22 +1,43 @@
+import { cloneDeep } from 'lodash'
 import * as Sequelize from 'sequelize'
+import { logger } from '@server/helpers/logger'
+import { sequelizeTypescript } from '@server/initializers/database'
 import { ResultList } from '../../shared/models'
 import { VideoCommentThreadTree } from '../../shared/models/videos/video-comment.model'
-import { AccountModel } from '../models/account/account'
-import { VideoModel } from '../models/video/video'
 import { VideoCommentModel } from '../models/video/video-comment'
-import { getVideoCommentActivityPubUrl } from './activitypub'
-import { sendCreateVideoComment } from './activitypub/send'
+import { MAccountDefault, MComment, MCommentOwnerVideoReply, MVideoFullLight, MCommentOwnerVideo } from '../types/models'
+import { sendCreateVideoComment, sendDeleteVideoComment } from './activitypub/send'
+import { getVideoCommentActivityPubUrl } from './activitypub/url'
+import { Hooks } from './plugins/hooks'
+
+async function removeComment (videoCommentInstance: MCommentOwnerVideo) {
+  const videoCommentInstanceBefore = cloneDeep(videoCommentInstance)
+
+  await sequelizeTypescript.transaction(async t => {
+    if (videoCommentInstance.isOwned() || videoCommentInstance.Video.isOwned()) {
+      await sendDeleteVideoComment(videoCommentInstance, t)
+    }
+
+    markCommentAsDeleted(videoCommentInstance)
+
+    await videoCommentInstance.save()
+  })
+
+  logger.info('Video comment %d deleted.', videoCommentInstance.id)
+
+  Hooks.runAction('action:api.video-comment.deleted', { comment: videoCommentInstanceBefore })
+}
 
 async function createVideoComment (obj: {
-  text: string,
-  inReplyToComment: VideoCommentModel,
-  video: VideoModel
-  account: AccountModel
+  text: string
+  inReplyToComment: MComment | null
+  video: MVideoFullLight
+  account: MAccountDefault
 }, t: Sequelize.Transaction) {
-  let originCommentId: number = null
-  let inReplyToCommentId: number = null
+  let originCommentId: number | null = null
+  let inReplyToCommentId: number | null = null
 
-  if (obj.inReplyToComment) {
+  if (obj.inReplyToComment && obj.inReplyToComment !== null) {
     originCommentId = obj.inReplyToComment.originCommentId || obj.inReplyToComment.id
     inReplyToCommentId = obj.inReplyToComment.id
   }
@@ -27,12 +48,12 @@ async function createVideoComment (obj: {
     inReplyToCommentId,
     videoId: obj.video.id,
     accountId: obj.account.id,
-    url: 'fake url'
+    url: new Date().toISOString()
   }, { transaction: t, validate: false })
 
-  comment.set('url', getVideoCommentActivityPubUrl(obj.video, comment))
+  comment.url = getVideoCommentActivityPubUrl(obj.video, comment)
 
-  const savedComment = await comment.save({ transaction: t })
+  const savedComment: MCommentOwnerVideoReply = await comment.save({ transaction: t })
   savedComment.InReplyToVideoComment = obj.inReplyToComment
   savedComment.Video = obj.video
   savedComment.Account = obj.account
@@ -64,10 +85,8 @@ function buildFormattedCommentTree (resultList: ResultList<VideoCommentModel>): 
     }
 
     const parentCommentThread = idx[childComment.inReplyToCommentId]
-    if (!parentCommentThread) {
-      const msg = `Cannot format video thread tree, parent ${childComment.inReplyToCommentId} not found for child ${childComment.id}`
-      throw new Error(msg)
-    }
+    // Maybe the parent comment was blocked by the admin/user
+    if (!parentCommentThread) continue
 
     parentCommentThread.children.push(childCommentThread)
     idx[childComment.id] = childCommentThread
@@ -76,9 +95,17 @@ function buildFormattedCommentTree (resultList: ResultList<VideoCommentModel>): 
   return thread
 }
 
+function markCommentAsDeleted (comment: MComment): void {
+  comment.text = ''
+  comment.deletedAt = new Date()
+  comment.accountId = null
+}
+
 // ---------------------------------------------------------------------------
 
 export {
+  removeComment,
   createVideoComment,
-  buildFormattedCommentTree
+  buildFormattedCommentTree,
+  markCommentAsDeleted
 }

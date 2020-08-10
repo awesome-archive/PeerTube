@@ -1,43 +1,64 @@
-/* tslint:disable:no-unused-expression */
+/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import * as chai from 'chai'
 import { keyBy } from 'lodash'
 import 'mocha'
 import { VideoPrivacy } from '../../../../shared/models/videos'
 import {
-  checkVideoFilesWereRemoved, completeVideoCheck, flushTests, getVideo, getVideoCategories, getVideoLanguages, getVideoLicences,
-  getVideoPrivacies, getVideosList, getVideosListPagination, getVideosListSort, killallServers, rateVideo, removeVideo, runServer,
-  searchVideo, searchVideoWithPagination, searchVideoWithSort, ServerInfo, setAccessTokensToServers, testImage, updateVideo, uploadVideo,
-  viewVideo, wait
-} from '../../utils'
+  checkVideoFilesWereRemoved,
+  cleanupTests,
+  completeVideoCheck,
+  flushAndRunServer,
+  getVideo,
+  getVideoCategories,
+  getVideoLanguages,
+  getVideoLicences,
+  getVideoPrivacies,
+  getVideosList,
+  getVideosListPagination,
+  getVideosListSort,
+  getVideosWithFilters,
+  rateVideo,
+  removeVideo,
+  ServerInfo,
+  setAccessTokensToServers,
+  testImage,
+  updateVideo,
+  uploadVideo,
+  viewVideo,
+  wait
+} from '../../../../shared/extra-utils'
 
 const expect = chai.expect
 
 describe('Test a single server', function () {
   let server: ServerInfo = null
   let videoId = -1
+  let videoId2 = -1
   let videoUUID = ''
   let videosListBase: any[] = null
 
-  const getCheckAttributes = {
+  const getCheckAttributes = () => ({
     name: 'my super name',
     category: 2,
     licence: 6,
-    language: 3,
+    language: 'zh',
     nsfw: true,
     description: 'my super description',
     support: 'my super support text',
     account: {
       name: 'root',
-      host: 'localhost:9001'
+      host: 'localhost:' + server.port
     },
     isLocal: true,
     duration: 5,
     tags: [ 'tag1', 'tag2', 'tag3' ],
     privacy: VideoPrivacy.PUBLIC,
     commentsEnabled: true,
+    downloadEnabled: true,
     channel: {
-      name: 'Default root channel',
+      displayName: 'Main root channel',
+      name: 'root_channel',
       description: '',
       isLocal: true
     },
@@ -48,27 +69,29 @@ describe('Test a single server', function () {
         size: 218910
       }
     ]
-  }
+  })
 
-  const updateCheckAttributes = {
+  const updateCheckAttributes = () => ({
     name: 'my super video updated',
     category: 4,
     licence: 2,
-    language: 5,
+    language: 'ar',
     nsfw: false,
     description: 'my super description updated',
     support: 'my super support text updated',
     account: {
       name: 'root',
-      host: 'localhost:9001'
+      host: 'localhost:' + server.port
     },
     isLocal: true,
     tags: [ 'tagup1', 'tagup2' ],
     privacy: VideoPrivacy.PUBLIC,
     duration: 5,
     commentsEnabled: false,
+    downloadEnabled: false,
     channel: {
-      name: 'Default root channel',
+      name: 'root_channel',
+      displayName: 'Main root channel',
       description: '',
       isLocal: true
     },
@@ -79,14 +102,12 @@ describe('Test a single server', function () {
         size: 292677
       }
     ]
-  }
+  })
 
   before(async function () {
     this.timeout(30000)
 
-    await flushTests()
-
-    server = await runServer(1)
+    server = await flushAndRunServer(1)
 
     await setAccessTokensToServers([ server ])
   })
@@ -97,7 +118,7 @@ describe('Test a single server', function () {
     const categories = res.body
     expect(Object.keys(categories)).to.have.length.above(10)
 
-    expect(categories[11]).to.equal('News')
+    expect(categories[11]).to.equal('News & Politics')
   })
 
   it('Should list video licences', async function () {
@@ -115,7 +136,7 @@ describe('Test a single server', function () {
     const languages = res.body
     expect(Object.keys(languages)).to.have.length.above(5)
 
-    expect(languages[3]).to.equal('Mandarin')
+    expect(languages['ru']).to.equal('Russian')
   })
 
   it('Should list video privacies', async function () {
@@ -162,7 +183,7 @@ describe('Test a single server', function () {
     expect(res.body.data.length).to.equal(1)
 
     const video = res.body.data[0]
-    await completeVideoCheck(server.url, video, getCheckAttributes)
+    await completeVideoCheck(server.url, video, getCheckAttributes())
   })
 
   it('Should get the video by UUID', async function () {
@@ -171,11 +192,11 @@ describe('Test a single server', function () {
     const res = await getVideo(server.url, videoUUID)
 
     const video = res.body
-    await completeVideoCheck(server.url, video, getCheckAttributes)
+    await completeVideoCheck(server.url, video, getCheckAttributes())
   })
 
   it('Should have the views updated', async function () {
-    this.timeout(10000)
+    this.timeout(20000)
 
     await viewVideo(server.url, videoId)
     await viewVideo(server.url, videoId)
@@ -190,78 +211,15 @@ describe('Test a single server', function () {
 
     await viewVideo(server.url, videoId)
     await viewVideo(server.url, videoId)
+
+    // Wait the repeatable job
+    await wait(8000)
 
     const res = await getVideo(server.url, videoId)
 
     const video = res.body
     expect(video.views).to.equal(3)
   })
-
-  it('Should search the video by name', async function () {
-    const res = await searchVideo(server.url, 'my')
-
-    expect(res.body.total).to.equal(1)
-    expect(res.body.data).to.be.an('array')
-    expect(res.body.data.length).to.equal(1)
-
-    const video = res.body.data[0]
-    await completeVideoCheck(server.url, video, getCheckAttributes)
-  })
-
-  // Not implemented yet
-  // it('Should search the video by tag', async function () {
-  //   const res = await searchVideo(server.url, 'tag1')
-  //
-  //   expect(res.body.total).to.equal(1)
-  //   expect(res.body.data).to.be.an('array')
-  //   expect(res.body.data.length).to.equal(1)
-  //
-  //   const video = res.body.data[0]
-  //   expect(video.name).to.equal('my super name')
-  //   expect(video.category).to.equal(2)
-  //   expect(video.categoryLabel).to.equal('Films')
-  //   expect(video.licence).to.equal(6)
-  //   expect(video.licenceLabel).to.equal('Attribution - Non Commercial - No Derivatives')
-  //   expect(video.language).to.equal(3)
-  //   expect(video.languageLabel).to.equal('Mandarin')
-  //   expect(video.nsfw).to.be.ok
-  //   expect(video.description).to.equal('my super description')
-  //   expect(video.account.name).to.equal('root')
-  //   expect(video.account.host).to.equal('localhost:9001')
-  //   expect(video.isLocal).to.be.true
-  //   expect(video.tags).to.deep.equal([ 'tag1', 'tag2', 'tag3' ])
-  //   expect(dateIsValid(video.createdAt)).to.be.true
-  //   expect(dateIsValid(video.updatedAt)).to.be.true
-  //
-  //   const test = await testVideoImage(server.url, 'video_short.webm', video.thumbnailPath)
-  //   expect(test).to.equal(true)
-  // })
-
-  it('Should not find a search by name', async function () {
-    const res = await searchVideo(server.url, 'hello')
-
-    expect(res.body.total).to.equal(0)
-    expect(res.body.data).to.be.an('array')
-    expect(res.body.data.length).to.equal(0)
-  })
-
-  // Not implemented yet
-  // it('Should not find a search by author', async function () {
-  //   const res = await searchVideo(server.url, 'hello')
-  //
-  //   expect(res.body.total).to.equal(0)
-  //   expect(res.body.data).to.be.an('array')
-  //   expect(res.body.data.length).to.equal(0)
-  // })
-  //
-  // Not implemented yet
-  // it('Should not find a search by tag', async function () {
-  //   const res = await searchVideo(server.url, 'hello')
-  //
-  //   expect(res.body.total).to.equal(0)
-  //   expect(res.body.data).to.be.an('array')
-  //   expect(res.body.data.length).to.equal(0)
-  // })
 
   it('Should remove the video', async function () {
     await removeVideo(server.url, server.accessToken, videoId)
@@ -280,29 +238,25 @@ describe('Test a single server', function () {
   it('Should upload 6 videos', async function () {
     this.timeout(25000)
 
-    const videos = [
+    const videos = new Set([
       'video_short.mp4', 'video_short.ogv', 'video_short.webm',
       'video_short1.webm', 'video_short2.webm', 'video_short3.webm'
-    ]
+    ])
 
-    const tasks: Promise<any>[] = []
     for (const video of videos) {
       const videoAttributes = {
         name: video + ' name',
         description: video + ' description',
         category: 2,
         licence: 1,
-        language: 1,
+        language: 'en',
         nsfw: true,
         tags: [ 'tag1', 'tag2', 'tag3' ],
         fixture: video
       }
 
-      const p = uploadVideo(server.url, server.accessToken, videoAttributes)
-      tasks.push(p)
+      await uploadVideo(server.url, server.accessToken, videoAttributes)
     }
-
-    await Promise.all(tasks)
   })
 
   it('Should have the correct durations', async function () {
@@ -365,64 +319,14 @@ describe('Test a single server', function () {
     expect(videos[0].name).to.equal(videosListBase[5].name)
   })
 
-  it('Should search the first video', async function () {
-    const res = await searchVideoWithPagination(server.url, 'webm', 0, 1, 'name')
+  it('Should not have the total field', async function () {
+    const res = await getVideosListPagination(server.url, 5, 6, 'name', true)
 
     const videos = res.body.data
-    expect(res.body.total).to.equal(4)
+    expect(res.body.total).to.not.exist
     expect(videos.length).to.equal(1)
-    expect(videos[0].name).to.equal('video_short1.webm name')
+    expect(videos[0].name).to.equal(videosListBase[5].name)
   })
-
-  it('Should search the last two videos', async function () {
-    const res = await searchVideoWithPagination(server.url, 'webm', 2, 2, 'name')
-
-    const videos = res.body.data
-    expect(res.body.total).to.equal(4)
-    expect(videos.length).to.equal(2)
-    expect(videos[0].name).to.equal('video_short3.webm name')
-    expect(videos[1].name).to.equal('video_short.webm name')
-  })
-
-  it('Should search all the webm videos', async function () {
-    const res = await searchVideoWithPagination(server.url, 'webm', 0, 15)
-
-    const videos = res.body.data
-    expect(res.body.total).to.equal(4)
-    expect(videos.length).to.equal(4)
-  })
-
-  // Not implemented yet
-  // it('Should search all the root author videos', async function () {
-  //   const res = await searchVideoWithPagination(server.url, 'root', 0, 15)
-  //
-  //   const videos = res.body.data
-  //   expect(res.body.total).to.equal(6)
-  //   expect(videos.length).to.equal(6)
-  // })
-
-  // Not implemented yet
-  // it('Should search all the 9001 port videos', async function () {
-  // const res = await   videosUtils.searchVideoWithPagination(server.url, '9001', 'host', 0, 15)
-
-  //     const videos = res.body.data
-  //     expect(res.body.total).to.equal(6)
-  //     expect(videos.length).to.equal(6)
-
-  //     done()
-  //   })
-  // })
-
-  // it('Should search all the localhost videos', async function () {
-  // const res = await   videosUtils.searchVideoWithPagination(server.url, 'localhost', 'host', 0, 15)
-
-  //     const videos = res.body.data
-  //     expect(res.body.total).to.equal(6)
-  //     expect(videos.length).to.equal(6)
-
-  //     done()
-  //   })
-  // })
 
   it('Should list and sort by name in descending order', async function () {
     const res = await getVideosListSort(server.url, '-name')
@@ -436,21 +340,17 @@ describe('Test a single server', function () {
     expect(videos[3].name).to.equal('video_short3.webm name')
     expect(videos[4].name).to.equal('video_short2.webm name')
     expect(videos[5].name).to.equal('video_short1.webm name')
+
+    videoId = videos[3].uuid
+    videoId2 = videos[5].uuid
   })
 
-  it('Should search and sort by name in ascending order', async function () {
-    const res = await searchVideoWithSort(server.url, 'webm', 'name')
+  it('Should list and sort by trending in descending order', async function () {
+    const res = await getVideosListPagination(server.url, 0, 2, '-trending')
 
     const videos = res.body.data
-    expect(res.body.total).to.equal(4)
-    expect(videos.length).to.equal(4)
-
-    expect(videos[0].name).to.equal('video_short1.webm name')
-    expect(videos[1].name).to.equal('video_short2.webm name')
-    expect(videos[2].name).to.equal('video_short3.webm name')
-    expect(videos[3].name).to.equal('video_short.webm name')
-
-    videoId = videos[2].id
+    expect(res.body.total).to.equal(6)
+    expect(videos.length).to.equal(2)
   })
 
   it('Should update a video', async function () {
@@ -458,13 +358,23 @@ describe('Test a single server', function () {
       name: 'my super video updated',
       category: 4,
       licence: 2,
-      language: 5,
+      language: 'ar',
       nsfw: false,
       description: 'my super description updated',
       commentsEnabled: false,
+      downloadEnabled: false,
       tags: [ 'tagup1', 'tagup2' ]
     }
     await updateVideo(server.url, server.accessToken, videoId, attributes)
+  })
+
+  it('Should filter by tags and category', async function () {
+    const res1 = await getVideosWithFilters(server.url, { tagsAllOf: [ 'tagup1', 'tagup2' ], categoryOneOf: 4 })
+    expect(res1.body.total).to.equal(1)
+    expect(res1.body.data[0].name).to.equal('my super video updated')
+
+    const res2 = await getVideosWithFilters(server.url, { tagsAllOf: [ 'tagup1', 'tagup2' ], categoryOneOf: 3 })
+    expect(res2.body.total).to.equal(0)
   })
 
   it('Should have the video updated', async function () {
@@ -473,7 +383,7 @@ describe('Test a single server', function () {
     const res = await getVideo(server.url, videoId)
     const video = res.body
 
-    await completeVideoCheck(server.url, video, updateCheckAttributes)
+    await completeVideoCheck(server.url, video, updateCheckAttributes())
   })
 
   it('Should update only the tags of a video', async function () {
@@ -485,7 +395,7 @@ describe('Test a single server', function () {
     const res = await getVideo(server.url, videoId)
     const video = res.body
 
-    await completeVideoCheck(server.url, video, Object.assign(updateCheckAttributes, attributes))
+    await completeVideoCheck(server.url, video, Object.assign(updateCheckAttributes(), attributes))
   })
 
   it('Should update only the description of a video', async function () {
@@ -497,7 +407,8 @@ describe('Test a single server', function () {
     const res = await getVideo(server.url, videoId)
     const video = res.body
 
-    await completeVideoCheck(server.url, video, Object.assign(updateCheckAttributes, attributes))
+    const expectedAttributes = Object.assign(updateCheckAttributes(), { tags: [ 'supertag', 'tag1', 'tag2' ] }, attributes)
+    await completeVideoCheck(server.url, video, expectedAttributes)
   })
 
   it('Should like a video', async function () {
@@ -520,12 +431,44 @@ describe('Test a single server', function () {
     expect(video.dislikes).to.equal(1)
   })
 
-  after(async function () {
-    killallServers([ server ])
+  it('Should sort by originallyPublishedAt', async function () {
+    {
 
-    // Keep the logs if the test failed
-    if (this['ok']) {
-      await flushTests()
+      {
+        const now = new Date()
+        const attributes = { originallyPublishedAt: now.toISOString() }
+        await updateVideo(server.url, server.accessToken, videoId, attributes)
+
+        const res = await getVideosListSort(server.url, '-originallyPublishedAt')
+        const names = res.body.data.map(v => v.name)
+
+        expect(names[0]).to.equal('my super video updated')
+        expect(names[1]).to.equal('video_short2.webm name')
+        expect(names[2]).to.equal('video_short1.webm name')
+        expect(names[3]).to.equal('video_short.webm name')
+        expect(names[4]).to.equal('video_short.ogv name')
+        expect(names[5]).to.equal('video_short.mp4 name')
+      }
+
+      {
+        const now = new Date()
+        const attributes = { originallyPublishedAt: now.toISOString() }
+        await updateVideo(server.url, server.accessToken, videoId2, attributes)
+
+        const res = await getVideosListSort(server.url, '-originallyPublishedAt')
+        const names = res.body.data.map(v => v.name)
+
+        expect(names[0]).to.equal('video_short1.webm name')
+        expect(names[1]).to.equal('my super video updated')
+        expect(names[2]).to.equal('video_short2.webm name')
+        expect(names[3]).to.equal('video_short.webm name')
+        expect(names[4]).to.equal('video_short.ogv name')
+        expect(names[5]).to.equal('video_short.mp4 name')
+      }
     }
+  })
+
+  after(async function () {
+    await cleanupTests([ server ])
   })
 })

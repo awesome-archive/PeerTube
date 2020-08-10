@@ -1,9 +1,10 @@
 import * as Sequelize from 'sequelize'
 import * as Promise from 'bluebird'
+import { Migration } from '../../models/migrations'
 
 function up (utils: {
-  transaction: Sequelize.Transaction,
-  queryInterface: Sequelize.QueryInterface,
+  transaction: Sequelize.Transaction
+  queryInterface: Sequelize.QueryInterface
   sequelize: Sequelize.Sequelize
 }): Promise<void> {
   const q = utils.queryInterface
@@ -12,7 +13,7 @@ function up (utils: {
     type: Sequelize.INTEGER,
     allowNull: false,
     defaultValue: 0
-  }
+  } as Migration.Integer
 
   return q.addColumn('Videos', 'licence', data)
     .then(() => {

@@ -7,12 +7,11 @@
       "resources": {
         "files": [
           "/index.html",
-          "/client/assets/images/favicon.png"
-        ],
-        "versionedFiles": [
+          "/client/assets/images/favicon.png",
           "/client/*.bundle.css",
           "/client/*.bundle.js",
-          "/client/*.chunk.js"
+          "/client/*.chunk.js",
+          "/manifest.webmanifest"
         ]
       }
     },

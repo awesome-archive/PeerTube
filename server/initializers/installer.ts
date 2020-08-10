@@ -1,23 +1,33 @@
 import * as passwordGenerator from 'password-generator'
 import { UserRole } from '../../shared'
-import { mkdirpPromise, rimrafPromise } from '../helpers/core-utils'
 import { logger } from '../helpers/logger'
-import { createApplicationActor, createUserAccountAndChannel } from '../lib/user'
+import { createApplicationActor, createUserAccountAndChannelAndPlaylist } from '../lib/user'
 import { UserModel } from '../models/account/user'
 import { ApplicationModel } from '../models/application/application'
 import { OAuthClientModel } from '../models/oauth/oauth-client'
-import { applicationExist, clientsExist, usersExist } from './checker'
-import { CACHE, CONFIG, LAST_MIGRATION_VERSION } from './constants'
+import { applicationExist, clientsExist, usersExist } from './checker-after-init'
+import { FILES_CACHE, HLS_STREAMING_PLAYLIST_DIRECTORY, LAST_MIGRATION_VERSION } from './constants'
 import { sequelizeTypescript } from './database'
+import { ensureDir, remove } from 'fs-extra'
+import { CONFIG } from './config'
 
 async function installApplication () {
   try {
-    await sequelizeTypescript.sync()
-    await removeCacheDirectories()
-    await createDirectoriesIfNotExist()
-    await createApplicationIfNotExist()
-    await createOAuthClientIfNotExist()
-    await createOAuthAdminIfNotExist()
+    await Promise.all([
+      // Database related
+      sequelizeTypescript.sync()
+        .then(() => {
+          return Promise.all([
+            createApplicationIfNotExist(),
+            createOAuthClientIfNotExist(),
+            createOAuthAdminIfNotExist()
+          ])
+        }),
+
+      // Directories
+      removeCacheAndTmpDirectories()
+        .then(() => createDirectoriesIfNotExist())
+    ])
   } catch (err) {
     logger.error('Cannot install application.', { err })
     process.exit(-1)
@@ -32,35 +42,42 @@ export {
 
 // ---------------------------------------------------------------------------
 
-function removeCacheDirectories () {
-  const cacheDirectories = CACHE.DIRECTORIES
+function removeCacheAndTmpDirectories () {
+  const cacheDirectories = Object.keys(FILES_CACHE)
+    .map(k => FILES_CACHE[k].DIRECTORY)
 
   const tasks: Promise<any>[] = []
 
   // Cache directories
   for (const key of Object.keys(cacheDirectories)) {
     const dir = cacheDirectories[key]
-    tasks.push(rimrafPromise(dir))
+    tasks.push(remove(dir))
   }
+
+  tasks.push(remove(CONFIG.STORAGE.TMP_DIR))
 
   return Promise.all(tasks)
 }
 
 function createDirectoriesIfNotExist () {
   const storage = CONFIG.STORAGE
-  const cacheDirectories = CACHE.DIRECTORIES
+  const cacheDirectories = Object.keys(FILES_CACHE)
+                                 .map(k => FILES_CACHE[k].DIRECTORY)
 
-  const tasks = []
+  const tasks: Promise<void>[] = []
   for (const key of Object.keys(storage)) {
     const dir = storage[key]
-    tasks.push(mkdirpPromise(dir))
+    tasks.push(ensureDir(dir))
   }
 
   // Cache directories
   for (const key of Object.keys(cacheDirectories)) {
     const dir = cacheDirectories[key]
-    tasks.push(mkdirpPromise(dir))
+    tasks.push(ensureDir(dir))
   }
+
+  // Playlist directories
+  tasks.push(ensureDir(HLS_STREAMING_PLAYLIST_DIRECTORY))
 
   return Promise.all(tasks)
 }
@@ -111,6 +128,8 @@ async function createOAuthAdminIfNotExist () {
 
     // Our password is weak so do not validate it
     validatePassword = false
+  } else if (process.env.PT_INITIAL_ROOT_PASSWORD) {
+    password = process.env.PT_INITIAL_ROOT_PASSWORD
   } else {
     password = passwordGenerator(16, true)
   }
@@ -120,11 +139,14 @@ async function createOAuthAdminIfNotExist () {
     email,
     password,
     role,
-    videoQuota: -1
+    verified: true,
+    nsfwPolicy: CONFIG.INSTANCE.DEFAULT_NSFW_POLICY,
+    videoQuota: -1,
+    videoQuotaDaily: -1
   }
   const user = new UserModel(userData)
 
-  await createUserAccountAndChannel(user, validatePassword)
+  await createUserAccountAndChannelAndPlaylist({ userToCreate: user, channelNames: undefined, validateUser: validatePassword })
   logger.info('Username: ' + username)
   logger.info('User password: ' + password)
 }

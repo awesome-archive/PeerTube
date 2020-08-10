@@ -1,19 +1,18 @@
 const helpers = require('./helpers')
+const path = require('path')
 
-const CheckerPlugin = require('awesome-typescript-loader').CheckerPlugin
 const HtmlWebpackPlugin = require('html-webpack-plugin')
-const UglifyJsPlugin = require('uglifyjs-webpack-plugin')
-const HashedModuleIdsPlugin = require('webpack/lib/HashedModuleIdsPlugin')
+const TerserPlugin = require('terser-webpack-plugin')
 const LoaderOptionsPlugin = require('webpack/lib/LoaderOptionsPlugin')
 const ExtractTextPlugin = require('extract-text-webpack-plugin')
 const PurifyCSSPlugin = require('purifycss-webpack')
 
 module.exports = function () {
-  const isProd = process.env.NODE_ENV === 'production'
-
   const configuration = {
     entry: {
-      'video-embed': './src/standalone/videos/embed.ts'
+      'video-embed': './src/standalone/videos/embed.ts',
+      'player': './src/standalone/player/player.ts',
+      'test-embed': './src/standalone/videos/test-embed.ts'
     },
 
     resolve: {
@@ -24,16 +23,29 @@ module.exports = function () {
        */
       extensions: [ '.ts', '.js', '.json', '.scss' ],
 
-      modules: [ helpers.root('src'), helpers.root('node_modules') ]
+      modules: [ helpers.root('src'), helpers.root('node_modules') ],
+
+      alias: {
+        'video.js$': path.resolve('node_modules/video.js/core.js'),
+        '@root-helpers': path.resolve('src/root-helpers'),
+        '@shared/models': path.resolve('../shared/models'),
+        '@shared/core-utils': path.resolve('../shared/core-utils')
+      }
     },
 
     output: {
       path: helpers.root('dist/standalone/videos'),
-      filename: '[name].[hash].bundle.js',
+
+      filename: process.env.ANALYZE_BUNDLE === 'true'
+        ? '[name].bundle.js'
+        : '[name].[hash].bundle.js',
+
       sourceMapFilename: '[file].map',
-      chunkFilename: '[id].chunk.js',
+      chunkFilename: '[id].[hash].chunk.js',
       publicPath: '/client/standalone/videos/'
     },
+
+    devtool: process.env.NODE_ENV === 'production' ? false : 'source-map',
 
     module: {
 
@@ -42,13 +54,12 @@ module.exports = function () {
           test: /\.ts$/,
           use: [
             {
-              loader: 'awesome-typescript-loader',
+              loader: 'ts-loader',
               options: {
-                configFileName: 'tsconfig.json'
+                configFile: 'tsconfig.base.json'
               }
             }
-          ],
-          exclude: [/\.(spec|e2e)\.ts$/]
+          ]
         },
 
         {
@@ -63,14 +74,15 @@ module.exports = function () {
                   importLoaders: 1
                 }
               },
-              'resolve-url-loader',
               {
                 loader: 'sass-loader',
                 options: {
-                  sourceMap: true,
-                  includePaths: [
-                    helpers.root('src/sass/include')
-                  ]
+                  sassOptions: {
+                    sourceMap: true,
+                    includePaths: [
+                      helpers.root('src/sass/include')
+                    ]
+                  }
                 }
               }
             ]
@@ -82,7 +94,8 @@ module.exports = function () {
           use: 'raw-loader',
           exclude: [
             helpers.root('src/index.html'),
-            helpers.root('src/standalone/videos/embed.html')
+            helpers.root('src/standalone/videos/embed.html'),
+            helpers.root('src/standalone/videos/test-embed.html')
           ]
         },
 
@@ -99,25 +112,38 @@ module.exports = function () {
 
     plugins: [
       new ExtractTextPlugin({
-        filename: '[name].[contenthash].css'
+        filename: process.env.ANALYZE_BUNDLE === 'true'
+          ? '[name].css'
+          : '[name].[hash].css'
       }),
 
       new PurifyCSSPlugin({
-        paths: [ helpers.root('src/standalone/videos/embed.ts') ],
+        paths: [
+          helpers.root('src/standalone/videos/embed.ts'),
+          helpers.root('src/standalone/videos/test-embed.html')
+        ],
         purifyOptions: {
           minify: true,
           whitelist: [ '*vjs*', '*video-js*' ]
         }
       }),
 
-      new CheckerPlugin(),
-
       new HtmlWebpackPlugin({
         template: 'src/standalone/videos/embed.html',
         filename: 'embed.html',
         title: 'PeerTube',
-        chunksSortMode: 'dependency',
-        inject: 'body'
+        chunksSortMode: 'auto',
+        inject: 'body',
+        chunks: ['video-embed']
+      }),
+
+      new HtmlWebpackPlugin({
+        template: '!!html-loader!src/standalone/videos/test-embed.html',
+        filename: 'test-embed.html',
+        title: 'PeerTube',
+        chunksSortMode: 'auto',
+        inject: 'body',
+        chunks: ['test-embed']
       }),
 
       /**
@@ -135,6 +161,32 @@ module.exports = function () {
       })
     ],
 
+    optimization: {
+      minimizer: [
+        new TerserPlugin({
+          terserOptions: {
+            ecma: 6,
+            warnings: false,
+            ie8: false,
+            mangle: true,
+            compress: {
+              passes: 3,
+              pure_getters: true
+            },
+            output: {
+              ascii_only: true,
+              comments: false
+            }
+          }
+        })
+      ]
+    },
+
+    performance: {
+      maxEntrypointSize: 700000, // 600kB
+      maxAssetSize: 700000
+    },
+
     node: {
       global: true,
       crypto: 'empty',
@@ -144,29 +196,6 @@ module.exports = function () {
       clearImmediate: false,
       setImmediate: false
     }
-  }
-
-  if (isProd) {
-    configuration.plugins.push(
-      new UglifyJsPlugin({
-        uglifyOptions: {
-          ecma: 6,
-          warnings: false,
-          ie8: false,
-          mangle: true,
-          compress: {
-            passes: 3,
-            pure_getters: true
-          },
-          output: {
-            ascii_only: true,
-            comments: false
-          }
-        }
-      }),
-
-      new HashedModuleIdsPlugin()
-    )
   }
 
   return configuration

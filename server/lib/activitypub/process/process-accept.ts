@@ -1,14 +1,12 @@
 import { ActivityAccept } from '../../../../shared/models/activitypub'
-import { getActorUrl } from '../../../helpers/activitypub'
-import { ActorModel } from '../../../models/activitypub/actor'
 import { ActorFollowModel } from '../../../models/activitypub/actor-follow'
-import { addFetchOutboxJob } from '../fetch'
+import { addFetchOutboxJob } from '../actor'
+import { APProcessorOptions } from '../../../types/activitypub-processor.model'
+import { MActorDefault, MActorSignature } from '../../../types/models'
 
-async function processAcceptActivity (activity: ActivityAccept, inboxActor?: ActorModel) {
+async function processAcceptActivity (options: APProcessorOptions<ActivityAccept>) {
+  const { byActor: targetActor, inboxActor } = options
   if (inboxActor === undefined) throw new Error('Need to accept on explicit inbox.')
-
-  const actorUrl = getActorUrl(activity.actor)
-  const targetActor = await ActorModel.loadByUrl(actorUrl)
 
   return processAccept(inboxActor, targetActor)
 }
@@ -21,13 +19,14 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function processAccept (actor: ActorModel, targetActor: ActorModel) {
+async function processAccept (actor: MActorDefault, targetActor: MActorSignature) {
   const follow = await ActorFollowModel.loadByActorAndTarget(actor.id, targetActor.id)
   if (!follow) throw new Error('Cannot find associated follow.')
 
   if (follow.state !== 'accepted') {
-    follow.set('state', 'accepted')
+    follow.state = 'accepted'
     await follow.save()
+
     await addFetchOutboxJob(targetActor)
   }
 }

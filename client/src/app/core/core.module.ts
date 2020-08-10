@@ -1,55 +1,92 @@
+import { HotkeyModule } from 'angular2-hotkeys'
+import { MessageService } from 'primeng/api'
+import { ToastModule } from 'primeng/toast'
 import { CommonModule } from '@angular/common'
 import { NgModule, Optional, SkipSelf } from '@angular/core'
-import { FormsModule } from '@angular/forms'
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations'
-import { RouterModule } from '@angular/router'
+import { UserNotificationSocket } from '@app/core/notification/user-notification-socket.service'
+import { HooksService } from '@app/core/plugins/hooks.service'
+import { PluginService } from '@app/core/plugins/plugin.service'
+import { UnloggedGuard } from '@app/core/routing/unlogged-guard.service'
 import { LoadingBarModule } from '@ngx-loading-bar/core'
 import { LoadingBarHttpClientModule } from '@ngx-loading-bar/http-client'
 import { LoadingBarRouterModule } from '@ngx-loading-bar/router'
-
-import { SimpleNotificationsModule } from 'angular2-notifications'
-import { ModalModule } from 'ngx-bootstrap/modal'
-
 import { AuthService } from './auth'
-import { ConfirmComponent, ConfirmService } from './confirm'
+import { ConfirmService } from './confirm'
+import { CheatSheetComponent } from './hotkeys'
+import { MenuService } from './menu'
 import { throwIfAlreadyLoaded } from './module-import-guard'
+import { Notifier } from './notification'
+import { HtmlRendererService, LinkifierService, MarkdownService } from './renderer'
+import { RestExtractor, RestService } from './rest'
 import { LoginGuard, RedirectService, UserRightGuard } from './routing'
+import { CanDeactivateGuard } from './routing/can-deactivate-guard.service'
+import { ServerConfigResolver } from './routing/server-config-resolver.service'
 import { ServerService } from './server'
+import { ThemeService } from './theme'
+import { UserService } from './users'
+import { LocalStorageService, ScreenService, SessionStorageService } from './wrappers'
 
 @NgModule({
   imports: [
     CommonModule,
-    RouterModule,
-    FormsModule,
     BrowserAnimationsModule,
-
-    ModalModule,
-    SimpleNotificationsModule.forRoot(),
 
     LoadingBarHttpClientModule,
     LoadingBarRouterModule,
-    LoadingBarModule.forRoot()
+    LoadingBarModule,
+    ToastModule,
+
+    HotkeyModule.forRoot({
+      cheatSheetCloseEsc: true
+    })
   ],
 
   declarations: [
-    ConfirmComponent
+    CheatSheetComponent
   ],
 
   exports: [
-    SimpleNotificationsModule,
     LoadingBarHttpClientModule,
     LoadingBarModule,
 
-    ConfirmComponent
+    ToastModule,
+
+    CheatSheetComponent
   ],
 
   providers: [
     AuthService,
     ConfirmService,
     ServerService,
+    ThemeService,
+    MenuService,
     LoginGuard,
     UserRightGuard,
-    RedirectService
+    UnloggedGuard,
+
+    PluginService,
+    HooksService,
+
+    HtmlRendererService,
+    LinkifierService,
+    MarkdownService,
+
+    RestExtractor,
+    RestService,
+
+    UserService,
+
+    ScreenService,
+    LocalStorageService,
+    SessionStorageService,
+
+    RedirectService,
+    Notifier,
+    MessageService,
+    UserNotificationSocket,
+    ServerConfigResolver,
+    CanDeactivateGuard
   ]
 })
 export class CoreModule {

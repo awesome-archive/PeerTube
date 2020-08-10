@@ -1,246 +1,372 @@
-import { Component, OnInit } from '@angular/core'
-import { FormBuilder, FormGroup } from '@angular/forms'
-import { Router } from '@angular/router'
+import { SelectItem } from 'primeng/api'
+import { forkJoin } from 'rxjs'
+import { ViewportScroller } from '@angular/common'
+import { AfterViewChecked, Component, OnInit, ViewChild } from '@angular/core'
 import { ConfigService } from '@app/+admin/config/shared/config.service'
-import { ConfirmService } from '@app/core'
+import { Notifier } from '@app/core'
 import { ServerService } from '@app/core/server/server.service'
-import { FormReactive, USER_VIDEO_QUOTA } from '@app/shared'
-import {
-  ADMIN_EMAIL,
-  CACHE_PREVIEWS_SIZE,
-  INSTANCE_NAME, INSTANCE_SHORT_DESCRIPTION,
-  SIGNUP_LIMIT,
-  TRANSCODING_THREADS
-} from '@app/shared/forms/form-validators/custom-config'
-import { NotificationsService } from 'angular2-notifications'
-import { CustomConfig } from '../../../../../../shared/models/server/custom-config.model'
+import { CustomConfigValidatorsService, FormReactive, FormValidatorService, UserValidatorsService } from '@app/shared/shared-forms'
+import { NgbNav } from '@ng-bootstrap/ng-bootstrap'
+import { I18n } from '@ngx-translate/i18n-polyfill'
+import { CustomConfig, ServerConfig } from '@shared/models'
 
 @Component({
   selector: 'my-edit-custom-config',
   templateUrl: './edit-custom-config.component.html',
   styleUrls: [ './edit-custom-config.component.scss' ]
 })
-export class EditCustomConfigComponent extends FormReactive implements OnInit {
+export class EditCustomConfigComponent extends FormReactive implements OnInit, AfterViewChecked {
+  // FIXME: use built-in router
+  @ViewChild('nav') nav: NgbNav
+
+  initDone = false
   customConfig: CustomConfig
-  resolutions = [ '240p', '360p', '480p', '720p', '1080p' ]
 
-  videoQuotaOptions = [
-    { value: -1, label: 'Unlimited' },
-    { value: 0, label: '0' },
-    { value: 100 * 1024 * 1024, label: '100MB' },
-    { value: 500 * 1024 * 1024, label: '500MB' },
-    { value: 1024 * 1024 * 1024, label: '1GB' },
-    { value: 5 * 1024 * 1024 * 1024, label: '5GB' },
-    { value: 20 * 1024 * 1024 * 1024, label: '20GB' },
-    { value: 50 * 1024 * 1024 * 1024, label: '50GB' }
-  ]
-  transcodingThreadOptions = [
-    { value: 1, label: '1' },
-    { value: 2, label: '2' },
-    { value: 4, label: '4' },
-    { value: 8, label: '8' }
-  ]
+  resolutions: { id: string, label: string, description?: string }[] = []
+  transcodingThreadOptions: { label: string, value: number }[] = []
 
-  form: FormGroup
-  formErrors = {
-    instanceName: '',
-    instanceShortDescription: '',
-    instanceDescription: '',
-    instanceTerms: '',
-    instanceDefaultClientRoute: '',
-    cachePreviewsSize: '',
-    signupLimit: '',
-    adminEmail: '',
-    userVideoQuota: '',
-    transcodingThreads: '',
-    customizationJavascript: '',
-    customizationCSS: ''
-  }
-  validationMessages = {
-    instanceShortDescription: INSTANCE_SHORT_DESCRIPTION.MESSAGES,
-    instanceName: INSTANCE_NAME.MESSAGES,
-    cachePreviewsSize: CACHE_PREVIEWS_SIZE.MESSAGES,
-    signupLimit: SIGNUP_LIMIT.MESSAGES,
-    adminEmail: ADMIN_EMAIL.MESSAGES,
-    userVideoQuota: USER_VIDEO_QUOTA.MESSAGES
-  }
+  languageItems: SelectItem[] = []
+  categoryItems: SelectItem[] = []
 
-  private oldCustomJavascript: string
-  private oldCustomCSS: string
+  private serverConfig: ServerConfig
 
   constructor (
-    private formBuilder: FormBuilder,
-    private router: Router,
-    private notificationsService: NotificationsService,
+    private viewportScroller: ViewportScroller,
+    protected formValidatorService: FormValidatorService,
+    private customConfigValidatorsService: CustomConfigValidatorsService,
+    private userValidatorsService: UserValidatorsService,
+    private notifier: Notifier,
     private configService: ConfigService,
     private serverService: ServerService,
-    private confirmService: ConfirmService
+    private i18n: I18n
   ) {
     super()
+
+    this.resolutions = [
+      {
+        id: '0p',
+        label: this.i18n('Audio-only'),
+        description: this.i18n('A <code>.mp4</code> that keeps the original audio track, with no video')
+      },
+      {
+        id: '240p',
+        label: this.i18n('240p')
+      },
+      {
+        id: '360p',
+        label: this.i18n('360p')
+      },
+      {
+        id: '480p',
+        label: this.i18n('480p')
+      },
+      {
+        id: '720p',
+        label: this.i18n('720p')
+      },
+      {
+        id: '1080p',
+        label: this.i18n('1080p')
+      },
+      {
+        id: '2160p',
+        label: this.i18n('2160p')
+      }
+    ]
+
+    this.transcodingThreadOptions = [
+      { value: 0, label: this.i18n('Auto (via ffmpeg)') },
+      { value: 1, label: '1' },
+      { value: 2, label: '2' },
+      { value: 4, label: '4' },
+      { value: 8, label: '8' }
+    ]
+  }
+
+  get videoQuotaOptions () {
+    return this.configService.videoQuotaOptions
+  }
+
+  get videoQuotaDailyOptions () {
+    return this.configService.videoQuotaDailyOptions
+  }
+
+  get availableThemes () {
+    return this.serverConfig.theme.registered
+      .map(t => t.name)
   }
 
   getResolutionKey (resolution: string) {
-    return 'transcodingResolution' + resolution
-  }
-
-  buildForm () {
-    const formGroupData = {
-      instanceName: [ '', INSTANCE_NAME.VALIDATORS ],
-      instanceShortDescription: [ '', INSTANCE_SHORT_DESCRIPTION.VALIDATORS ],
-      instanceDescription: [ '' ],
-      instanceTerms: [ '' ],
-      instanceDefaultClientRoute: [ '' ],
-      cachePreviewsSize: [ '', CACHE_PREVIEWS_SIZE.VALIDATORS ],
-      signupEnabled: [ ],
-      signupLimit: [ '', SIGNUP_LIMIT.VALIDATORS ],
-      adminEmail: [ '', ADMIN_EMAIL.VALIDATORS ],
-      userVideoQuota: [ '', USER_VIDEO_QUOTA.VALIDATORS ],
-      transcodingThreads: [ '', TRANSCODING_THREADS.VALIDATORS ],
-      transcodingEnabled: [ ],
-      customizationJavascript: [ '' ],
-      customizationCSS: [ '' ]
-    }
-
-    for (const resolution of this.resolutions) {
-      const key = this.getResolutionKey(resolution)
-      formGroupData[key] = [ false ]
-    }
-
-    this.form = this.formBuilder.group(formGroupData)
-
-    this.form.valueChanges.subscribe(data => this.onValueChanged(data))
+    return 'transcoding.resolutions.' + resolution
   }
 
   ngOnInit () {
-    this.buildForm()
+    this.serverConfig = this.serverService.getTmpConfig()
+    this.serverService.getConfig()
+        .subscribe(config => this.serverConfig = config)
 
-    this.configService.getCustomConfig()
-      .subscribe(
-        res => {
-          this.customConfig = res
-
-          this.oldCustomCSS = this.customConfig.instance.customizations.css
-          this.oldCustomJavascript = this.customConfig.instance.customizations.javascript
-
-          this.updateForm()
-          // Force form validation
-          this.forceCheck()
-        },
-
-        err => this.notificationsService.error('Error', err.message)
-      )
-  }
-
-  isTranscodingEnabled () {
-    return this.form.value['transcodingEnabled'] === true
-  }
-
-  isSignupEnabled () {
-    return this.form.value['signupEnabled'] === true
-  }
-
-  async formValidated () {
-    const newCustomizationJavascript = this.form.value['customizationJavascript']
-    const newCustomizationCSS = this.form.value['customizationCSS']
-
-    const customizations = []
-    if (newCustomizationJavascript && newCustomizationJavascript !== this.oldCustomJavascript) customizations.push('JavaScript')
-    if (newCustomizationCSS && newCustomizationCSS !== this.oldCustomCSS) customizations.push('CSS')
-
-    if (customizations.length !== 0) {
-      const customizationsText = customizations.join('/')
-
-      const message = `You set custom ${customizationsText}. ` +
-        'This could lead to security issues or bugs if you do not understand it. ' +
-        'Are you sure you want to update the configuration?'
-      const label = `Please type "I understand the ${customizationsText} I set" to confirm.`
-      const expectedInputValue = `I understand the ${customizationsText} I set`
-
-      const confirmRes = await this.confirmService.confirmWithInput(message, label, expectedInputValue)
-      if (confirmRes === false) return
-    }
-
-    const data: CustomConfig = {
+    const formGroupData: { [key in keyof CustomConfig ]: any } = {
       instance: {
-        name: this.form.value['instanceName'],
-        shortDescription: this.form.value['instanceShortDescription'],
-        description: this.form.value['instanceDescription'],
-        terms: this.form.value['instanceTerms'],
-        defaultClientRoute: this.form.value['instanceDefaultClientRoute'],
+        name: this.customConfigValidatorsService.INSTANCE_NAME,
+        shortDescription: this.customConfigValidatorsService.INSTANCE_SHORT_DESCRIPTION,
+        description: null,
+
+        isNSFW: false,
+        defaultNSFWPolicy: null,
+
+        terms: null,
+        codeOfConduct: null,
+
+        creationReason: null,
+        moderationInformation: null,
+        administrator: null,
+        maintenanceLifetime: null,
+        businessModel: null,
+
+        hardwareInformation: null,
+
+        categories: null,
+        languages: null,
+
+        defaultClientRoute: null,
+
         customizations: {
-          javascript: this.form.value['customizationJavascript'],
-          css: this.form.value['customizationCSS']
+          javascript: null,
+          css: null
+        }
+      },
+      theme: {
+        default: null
+      },
+      services: {
+        twitter: {
+          username: this.customConfigValidatorsService.SERVICES_TWITTER_USERNAME,
+          whitelisted: null
         }
       },
       cache: {
         previews: {
-          size: this.form.value['cachePreviewsSize']
+          size: this.customConfigValidatorsService.CACHE_PREVIEWS_SIZE
+        },
+        captions: {
+          size: this.customConfigValidatorsService.CACHE_CAPTIONS_SIZE
         }
       },
       signup: {
-        enabled: this.form.value['signupEnabled'],
-        limit: this.form.value['signupLimit']
+        enabled: null,
+        limit: this.customConfigValidatorsService.SIGNUP_LIMIT,
+        requiresEmailVerification: null
+      },
+      import: {
+        videos: {
+          http: {
+            enabled: null
+          },
+          torrent: {
+            enabled: null
+          }
+        }
       },
       admin: {
-        email: this.form.value['adminEmail']
+        email: this.customConfigValidatorsService.ADMIN_EMAIL
+      },
+      contactForm: {
+        enabled: null
       },
       user: {
-        videoQuota: this.form.value['userVideoQuota']
+        videoQuota: this.userValidatorsService.USER_VIDEO_QUOTA,
+        videoQuotaDaily: this.userValidatorsService.USER_VIDEO_QUOTA_DAILY
       },
       transcoding: {
-        enabled: this.form.value['transcodingEnabled'],
-        threads: this.form.value['transcodingThreads'],
-        resolutions: {
-          '240p': this.form.value[this.getResolutionKey('240p')],
-          '360p': this.form.value[this.getResolutionKey('360p')],
-          '480p': this.form.value[this.getResolutionKey('480p')],
-          '720p': this.form.value[this.getResolutionKey('720p')],
-          '1080p': this.form.value[this.getResolutionKey('1080p')]
+        enabled: null,
+        threads: this.customConfigValidatorsService.TRANSCODING_THREADS,
+        allowAdditionalExtensions: null,
+        allowAudioFiles: null,
+        resolutions: {},
+        hls: {
+          enabled: null
+        },
+        webtorrent: {
+          enabled: null
+        }
+      },
+      autoBlacklist: {
+        videos: {
+          ofUsers: {
+            enabled: null
+          }
+        }
+      },
+      followers: {
+        instance: {
+          enabled: null,
+          manualApproval: null
+        }
+      },
+      followings: {
+        instance: {
+          autoFollowBack: {
+            enabled: null
+          },
+          autoFollowIndex: {
+            enabled: null,
+            indexUrl: this.customConfigValidatorsService.INDEX_URL
+          }
+        }
+      },
+      broadcastMessage: {
+        enabled: null,
+        level: null,
+        dismissable: null,
+        message: null
+      },
+      search: {
+        remoteUri: {
+          users: null,
+          anonymous: null
+        },
+        searchIndex: {
+          enabled: null,
+          url: this.customConfigValidatorsService.SEARCH_INDEX_URL,
+          disableLocalSearch: null,
+          isDefaultSearch: null
         }
       }
     }
 
-    this.configService.updateCustomConfig(data)
+    const defaultValues = {
+      transcoding: {
+        resolutions: {}
+      }
+    }
+    for (const resolution of this.resolutions) {
+      defaultValues.transcoding.resolutions[resolution.id] = 'false'
+      formGroupData.transcoding.resolutions[resolution.id] = null
+    }
+
+    this.buildForm(formGroupData)
+    this.loadForm()
+    this.checkTranscodingFields()
+  }
+
+  ngAfterViewChecked () {
+    if (!this.initDone) {
+      this.initDone = true
+      this.gotoAnchor()
+    }
+  }
+
+  isTranscodingEnabled () {
+    return this.form.value['transcoding']['enabled'] === true
+  }
+
+  isSignupEnabled () {
+    return this.form.value['signup']['enabled'] === true
+  }
+
+  isSearchIndexEnabled () {
+    return this.form.value['search']['searchIndex']['enabled'] === true
+  }
+
+  isAutoFollowIndexEnabled () {
+    return this.form.value['followings']['instance']['autoFollowIndex']['enabled'] === true
+  }
+
+  async formValidated () {
+    this.configService.updateCustomConfig(this.form.getRawValue())
       .subscribe(
         res => {
           this.customConfig = res
 
           // Reload general configuration
-          this.serverService.loadConfig()
+          this.serverService.resetConfig()
 
           this.updateForm()
 
-          this.notificationsService.success('Success', 'Configuration updated.')
+          this.notifier.success(this.i18n('Configuration updated.'))
         },
 
-        err => this.notificationsService.error('Error', err.message)
+        err => this.notifier.error(err.message)
       )
   }
 
-  private updateForm () {
-    const data = {
-      instanceName: this.customConfig.instance.name,
-      instanceShortDescription: this.customConfig.instance.shortDescription,
-      instanceDescription: this.customConfig.instance.description,
-      instanceTerms: this.customConfig.instance.terms,
-      instanceDefaultClientRoute: this.customConfig.instance.defaultClientRoute,
-      cachePreviewsSize: this.customConfig.cache.previews.size,
-      signupEnabled: this.customConfig.signup.enabled,
-      signupLimit: this.customConfig.signup.limit,
-      adminEmail: this.customConfig.admin.email,
-      userVideoQuota: this.customConfig.user.videoQuota,
-      transcodingThreads: this.customConfig.transcoding.threads,
-      transcodingEnabled: this.customConfig.transcoding.enabled,
-      customizationJavascript: this.customConfig.instance.customizations.javascript,
-      customizationCSS: this.customConfig.instance.customizations.css
-    }
-
-    for (const resolution of this.resolutions) {
-      const key = this.getResolutionKey(resolution)
-      data[key] = this.customConfig.transcoding.resolutions[resolution]
-    }
-
-    this.form.patchValue(data)
+  getSelectedLanguageLabel () {
+    return this.i18n('{{\'{0} languages selected')
   }
 
+  getDefaultLanguageLabel () {
+    return this.i18n('No language')
+  }
+
+  getSelectedCategoryLabel () {
+    return this.i18n('{{\'{0} categories selected')
+  }
+
+  getDefaultCategoryLabel () {
+    return this.i18n('No category')
+  }
+
+  gotoAnchor () {
+    const hashToNav = {
+      'customizations': 'advanced-configuration'
+    }
+    const hash = window.location.hash.replace('#', '')
+
+    if (hash && Object.keys(hashToNav).includes(hash)) {
+      this.nav.select(hashToNav[hash])
+      setTimeout(() => this.viewportScroller.scrollToAnchor(hash), 100)
+    }
+  }
+
+  private updateForm () {
+    this.form.patchValue(this.customConfig)
+  }
+
+  private loadForm () {
+    forkJoin([
+      this.configService.getCustomConfig(),
+      this.serverService.getVideoLanguages(),
+      this.serverService.getVideoCategories()
+    ]).subscribe(
+      ([ config, languages, categories ]) => {
+        this.customConfig = config
+
+        this.languageItems = languages.map(l => ({ label: l.label, value: l.id }))
+        this.categoryItems = categories.map(l => ({ label: l.label, value: l.id }))
+
+        this.updateForm()
+        // Force form validation
+        this.forceCheck()
+      },
+
+      err => this.notifier.error(err.message)
+    )
+  }
+
+  private checkTranscodingFields () {
+    const hlsControl = this.form.get('transcoding.hls.enabled')
+    const webtorrentControl = this.form.get('transcoding.webtorrent.enabled')
+
+    webtorrentControl.valueChanges
+                     .subscribe(newValue => {
+                       if (newValue === false && !hlsControl.disabled) {
+                         hlsControl.disable()
+                       }
+
+                       if (newValue === true && !hlsControl.enabled) {
+                         hlsControl.enable()
+                       }
+                     })
+
+    hlsControl.valueChanges
+              .subscribe(newValue => {
+                if (newValue === false && !webtorrentControl.disabled) {
+                  webtorrentControl.disable()
+                }
+
+                if (newValue === true && !webtorrentControl.enabled) {
+                  webtorrentControl.enable()
+                }
+              })
+  }
 }

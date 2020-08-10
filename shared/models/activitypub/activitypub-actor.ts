@@ -1,6 +1,6 @@
-import { ActivityPubAttributedTo } from './objects/common-objects'
+import { ActivityIconObject, ActivityPubAttributedTo } from './objects/common-objects'
 
-export type ActivityPubActorType = 'Person' | 'Application' | 'Group'
+export type ActivityPubActorType = 'Person' | 'Application' | 'Group' | 'Service' | 'Organization'
 
 export interface ActivityPubActor {
   '@context': any[]
@@ -8,6 +8,7 @@ export interface ActivityPubActor {
   id: string
   following: string
   followers: string
+  playlists?: string
   inbox: string
   outbox: string
   preferredUsername: string
@@ -20,16 +21,11 @@ export interface ActivityPubActor {
   attributedTo: ActivityPubAttributedTo[]
 
   support?: string
-  uuid: string
   publicKey: {
     id: string
     owner: string
     publicKeyPem: string
   }
 
-  icon: {
-    type: 'Image'
-    mediaType: 'image/png'
-    url: string
-  }
+  icon: ActivityIconObject
 }

@@ -1,34 +1,103 @@
+import * as Bluebird from 'bluebird'
+import validator from 'validator'
 import { ResultList } from '../../shared/models'
-import { Activity, ActivityPubActor } from '../../shared/models/activitypub'
-import { ACTIVITY_PUB } from '../initializers'
-import { ActorModel } from '../models/activitypub/actor'
-import { signObject } from './peertube-crypto'
+import { Activity } from '../../shared/models/activitypub'
+import { ACTIVITY_PUB, REMOTE_SCHEME } from '../initializers/constants'
+import { signJsonLDObject } from './peertube-crypto'
+import { pageToStartAndCount } from './core-utils'
+import { URL } from 'url'
+import { MActor, MVideoAccountLight } from '../types/models'
+import { ContextType } from '@shared/models/activitypub/context'
 
-function activityPubContextify <T> (data: T) {
-  return Object.assign(data,{
-    '@context': [
-      'https://www.w3.org/ns/activitystreams',
-      'https://w3id.org/security/v1',
-      {
-        'RsaSignature2017': 'https://w3id.org/security#RsaSignature2017',
-        'Hashtag': 'as:Hashtag',
-        'uuid': 'http://schema.org/identifier',
-        'category': 'http://schema.org/category',
-        'licence': 'http://schema.org/license',
-        'sensitive': 'as:sensitive',
-        'language': 'http://schema.org/inLanguage',
-        'views': 'http://schema.org/Number',
-        'size': 'http://schema.org/Number',
-        'commentsEnabled': 'http://schema.org/Boolean',
-        'support': 'http://schema.org/Text'
-      },
-      {
+function getContextData (type: ContextType) {
+  const context: any[] = [
+    'https://www.w3.org/ns/activitystreams',
+    'https://w3id.org/security/v1',
+    {
+      RsaSignature2017: 'https://w3id.org/security#RsaSignature2017'
+    }
+  ]
+
+  if (type !== 'View' && type !== 'Announce') {
+    const additional = {
+      pt: 'https://joinpeertube.org/ns#',
+      sc: 'http://schema.org#'
+    }
+
+    if (type === 'CacheFile') {
+      Object.assign(additional, {
+        expires: 'sc:expires',
+        CacheFile: 'pt:CacheFile'
+      })
+    } else {
+      Object.assign(additional, {
+        Hashtag: 'as:Hashtag',
+        uuid: 'sc:identifier',
+        category: 'sc:category',
+        licence: 'sc:license',
+        subtitleLanguage: 'sc:subtitleLanguage',
+        sensitive: 'as:sensitive',
+        language: 'sc:inLanguage',
+
+        Infohash: 'pt:Infohash',
+        Playlist: 'pt:Playlist',
+        PlaylistElement: 'pt:PlaylistElement',
+
+        originallyPublishedAt: 'sc:datePublished',
+        views: {
+          '@type': 'sc:Number',
+          '@id': 'pt:views'
+        },
+        state: {
+          '@type': 'sc:Number',
+          '@id': 'pt:state'
+        },
+        size: {
+          '@type': 'sc:Number',
+          '@id': 'pt:size'
+        },
+        fps: {
+          '@type': 'sc:Number',
+          '@id': 'pt:fps'
+        },
+        startTimestamp: {
+          '@type': 'sc:Number',
+          '@id': 'pt:startTimestamp'
+        },
+        stopTimestamp: {
+          '@type': 'sc:Number',
+          '@id': 'pt:stopTimestamp'
+        },
+        position: {
+          '@type': 'sc:Number',
+          '@id': 'pt:position'
+        },
+        commentsEnabled: {
+          '@type': 'sc:Boolean',
+          '@id': 'pt:commentsEnabled'
+        },
+        downloadEnabled: {
+          '@type': 'sc:Boolean',
+          '@id': 'pt:downloadEnabled'
+        },
+        waitTranscoding: {
+          '@type': 'sc:Boolean',
+          '@id': 'pt:waitTranscoding'
+        },
+        support: {
+          '@type': 'sc:Text',
+          '@id': 'pt:support'
+        },
         likes: {
           '@id': 'as:likes',
           '@type': '@id'
         },
         dislikes: {
           '@id': 'as:dislikes',
+          '@type': '@id'
+        },
+        playlists: {
+          '@id': 'pt:playlists',
           '@type': '@id'
         },
         shares: {
@@ -39,77 +108,102 @@ function activityPubContextify <T> (data: T) {
           '@id': 'as:comments',
           '@type': '@id'
         }
-      }
-    ]
-  })
-}
+      })
+    }
 
-function activityPubCollection (url: string, results: any[]) {
+    context.push(additional)
+  }
+
   return {
-    id: url,
-    type: 'OrderedCollection',
-    totalItems: results.length,
-    orderedItems: results
+    '@context': context
   }
 }
 
-function activityPubCollectionPagination (url: string, page: any, result: ResultList<any>) {
-  let next: string
-  let prev: string
+function activityPubContextify <T> (data: T, type: ContextType = 'All') {
+  return Object.assign({}, data, getContextData(type))
+}
+
+type ActivityPubCollectionPaginationHandler = (start: number, count: number) => Bluebird<ResultList<any>> | Promise<ResultList<any>>
+async function activityPubCollectionPagination (
+  baseUrl: string,
+  handler: ActivityPubCollectionPaginationHandler,
+  page?: any,
+  size = ACTIVITY_PUB.COLLECTION_ITEMS_PER_PAGE
+) {
+  if (!page || !validator.isInt(page)) {
+    // We just display the first page URL, we only need the total items
+    const result = await handler(0, 1)
+
+    return {
+      id: baseUrl,
+      type: 'OrderedCollectionPage',
+      totalItems: result.total,
+      first: baseUrl + '?page=1'
+    }
+  }
+
+  const { start, count } = pageToStartAndCount(page, size)
+  const result = await handler(start, count)
+
+  let next: string | undefined
+  let prev: string | undefined
 
   // Assert page is a number
   page = parseInt(page, 10)
 
   // There are more results
-  if (result.total > page * ACTIVITY_PUB.COLLECTION_ITEMS_PER_PAGE) {
-    next = url + '?page=' + (page + 1)
+  if (result.total > page * size) {
+    next = baseUrl + '?page=' + (page + 1)
   }
 
   if (page > 1) {
-    prev = url + '?page=' + (page - 1)
+    prev = baseUrl + '?page=' + (page - 1)
   }
 
-  const orderedCollectionPagination = {
-    id: url + '?page=' + page,
+  return {
+    id: baseUrl + '?page=' + page,
     type: 'OrderedCollectionPage',
     prev,
     next,
-    partOf: url,
-    orderedItems: result.data
+    partOf: baseUrl,
+    orderedItems: result.data,
+    totalItems: result.total
   }
 
-  if (page === 1) {
-    return activityPubContextify({
-      id: url,
-      type: 'OrderedCollection',
-      totalItems: result.total,
-      first: orderedCollectionPagination
-    })
-  } else {
-    orderedCollectionPagination['totalItems'] = result.total
-  }
-
-  return orderedCollectionPagination
 }
 
-function buildSignedActivity (byActor: ActorModel, data: Object) {
-  const activity = activityPubContextify(data)
+function buildSignedActivity (byActor: MActor, data: Object, contextType?: ContextType) {
+  const activity = activityPubContextify(data, contextType)
 
-  return signObject(byActor, activity) as Promise<Activity>
+  return signJsonLDObject(byActor, activity) as Promise<Activity>
 }
 
-function getActorUrl (activityActor: string | ActivityPubActor) {
-  if (typeof activityActor === 'string') return activityActor
+function getAPId (activity: string | { id: string }) {
+  if (typeof activity === 'string') return activity
 
-  return activityActor.id
+  return activity.id
+}
+
+function checkUrlsSameHost (url1: string, url2: string) {
+  const idHost = new URL(url1).host
+  const actorHost = new URL(url2).host
+
+  return idHost && actorHost && idHost.toLowerCase() === actorHost.toLowerCase()
+}
+
+function buildRemoteVideoBaseUrl (video: MVideoAccountLight, path: string) {
+  const host = video.VideoChannel.Account.Actor.Server.host
+
+  return REMOTE_SCHEME.HTTP + '://' + host + path
 }
 
 // ---------------------------------------------------------------------------
 
 export {
-  getActorUrl,
+  checkUrlsSameHost,
+  getAPId,
   activityPubContextify,
   activityPubCollectionPagination,
-  activityPubCollection,
-  buildSignedActivity
+  buildSignedActivity,
+  buildRemoteVideoBaseUrl
 }

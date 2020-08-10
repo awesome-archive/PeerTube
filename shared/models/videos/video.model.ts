@@ -1,21 +1,11 @@
-import { VideoResolution } from '../../index'
-import { Account } from '../actors'
-import { Avatar } from '../avatars/avatar.model'
-import { VideoChannel } from './video-channel.model'
+import { Account, AccountSummary } from '../actors'
+import { VideoChannel, VideoChannelSummary } from './channel/video-channel.model'
+import { VideoConstant } from './video-constant.model'
+import { VideoFile } from './video-file.model'
 import { VideoPrivacy } from './video-privacy.enum'
-
-export interface VideoConstant <T> {
-  id: number
-  label: string
-}
-
-export interface VideoFile {
-  magnetUri: string
-  resolution: VideoConstant<VideoResolution>
-  size: number // Bytes
-  torrentUrl: string
-  fileUrl: string
-}
+import { VideoScheduleUpdate } from './video-schedule-update.model'
+import { VideoState } from './video-state.enum'
+import { VideoStreamingPlaylist } from './video-streaming-playlist.model'
 
 export interface Video {
   id: number
@@ -23,37 +13,63 @@ export interface Video {
   createdAt: Date | string
   updatedAt: Date | string
   publishedAt: Date | string
+  originallyPublishedAt: Date | string
   category: VideoConstant<number>
   licence: VideoConstant<number>
-  language: VideoConstant<number>
+  language: VideoConstant<string>
+  privacy: VideoConstant<VideoPrivacy>
   description: string
   duration: number
   isLocal: boolean
   name: string
+
   thumbnailPath: string
+  thumbnailUrl?: string
+
   previewPath: string
+  previewUrl?: string
+
   embedPath: string
+  embedUrl?: string
+
+  // When using the search index
+  url?: string
+
   views: number
   likes: number
   dislikes: number
   nsfw: boolean
 
-  account: {
-    name: string
-    displayName: string
-    url: string
-    host: string
-    avatar: Avatar
+  waitTranscoding?: boolean
+  state?: VideoConstant<VideoState>
+  scheduledUpdate?: VideoScheduleUpdate
+
+  blacklisted?: boolean
+  blacklistedReason?: string
+
+  account: AccountSummary
+  channel: VideoChannelSummary
+
+  userHistory?: {
+    currentTime: number
   }
 }
 
 export interface VideoDetails extends Video {
-  privacy: VideoConstant<VideoPrivacy>
   descriptionPath: string
   support: string
   channel: VideoChannel
+  account: Account
   tags: string[]
   files: VideoFile[]
-  account: Account
   commentsEnabled: boolean
+  downloadEnabled: boolean
+
+  // Not optional in details (unlike in Video)
+  waitTranscoding: boolean
+  state: VideoConstant<VideoState>
+
+  trackerUrls: string[]
+
+  streamingPlaylists: VideoStreamingPlaylist[]
 }

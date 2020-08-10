@@ -1,20 +1,12 @@
+import { Subscription } from 'rxjs'
 import { Component, OnDestroy, OnInit } from '@angular/core'
-import { FormBuilder, FormGroup } from '@angular/forms'
 import { ActivatedRoute, Router } from '@angular/router'
-import { Subscription } from 'rxjs/Subscription'
-
-import { NotificationsService } from 'angular2-notifications'
-
-import { UserService } from '../shared'
-import {
-  USER_EMAIL,
-  USER_VIDEO_QUOTA,
-  USER_ROLE,
-  User
-} from '../../../shared'
-import { ServerService } from '../../../core'
+import { ConfigService } from '@app/+admin/config/shared/config.service'
+import { AuthService, Notifier, ScreenService, ServerService, User, UserService } from '@app/core'
+import { FormValidatorService, UserValidatorsService } from '@app/shared/shared-forms'
+import { I18n } from '@ngx-translate/i18n-polyfill'
+import { User as UserType, UserAdminFlag, UserRole, UserUpdate } from '@shared/models'
 import { UserEdit } from './user-edit'
-import { UserUpdate, UserRole } from '../../../../../../shared'
 
 @Component({
   selector: 'my-user-update',
@@ -23,50 +15,47 @@ import { UserUpdate, UserRole } from '../../../../../../shared'
 })
 export class UserUpdateComponent extends UserEdit implements OnInit, OnDestroy {
   error: string
-  userId: number
-  username: string
-
-  form: FormGroup
-  formErrors = {
-    'email': '',
-    'role': '',
-    'videoQuota': ''
-  }
-  validationMessages = {
-    'email': USER_EMAIL.MESSAGES,
-    'role': USER_ROLE.MESSAGES,
-    'videoQuota': USER_VIDEO_QUOTA.MESSAGES
-  }
 
   private paramsSub: Subscription
 
   constructor (
+    protected formValidatorService: FormValidatorService,
     protected serverService: ServerService,
+    protected configService: ConfigService,
+    protected screenService: ScreenService,
+    protected auth: AuthService,
+    private userValidatorsService: UserValidatorsService,
     private route: ActivatedRoute,
     private router: Router,
-    private notificationsService: NotificationsService,
-    private formBuilder: FormBuilder,
-    private userService: UserService
+    private notifier: Notifier,
+    private userService: UserService,
+    private i18n: I18n
   ) {
     super()
-  }
 
-  buildForm () {
-    this.form = this.formBuilder.group({
-      email:    [ '', USER_EMAIL.VALIDATORS ],
-      role: [ '', USER_ROLE.VALIDATORS ],
-      videoQuota: [ '-1', USER_VIDEO_QUOTA.VALIDATORS ]
-    })
-
-    this.form.valueChanges.subscribe(data => this.onValueChanged(data))
+    this.buildQuotaOptions()
   }
 
   ngOnInit () {
-    this.buildForm()
+    super.ngOnInit()
+
+    const defaultValues = {
+      role: UserRole.USER.toString(),
+      videoQuota: '-1',
+      videoQuotaDaily: '-1'
+    }
+
+    this.buildForm({
+      email: this.userValidatorsService.USER_EMAIL,
+      role: this.userValidatorsService.USER_ROLE,
+      videoQuota: this.userValidatorsService.USER_VIDEO_QUOTA,
+      videoQuotaDaily: this.userValidatorsService.USER_VIDEO_QUOTA_DAILY,
+      byPassAutoBlock: null
+    }, defaultValues)
 
     this.paramsSub = this.route.params.subscribe(routeParams => {
       const userId = routeParams['id']
-      this.userService.getUser(userId).subscribe(
+      this.userService.getUser(userId, true).subscribe(
         user => this.onUserFetched(user),
 
         err => this.error = err.message
@@ -82,13 +71,15 @@ export class UserUpdateComponent extends UserEdit implements OnInit, OnDestroy {
     this.error = undefined
 
     const userUpdate: UserUpdate = this.form.value
+    userUpdate.adminFlags = this.buildAdminFlags(this.form.value)
 
     // A select in HTML is always mapped as a string, we convert it to number
     userUpdate.videoQuota = parseInt(this.form.value['videoQuota'], 10)
+    userUpdate.videoQuotaDaily = parseInt(this.form.value['videoQuotaDaily'], 10)
 
-    this.userService.updateUser(this.userId, userUpdate).subscribe(
+    this.userService.updateUser(this.user.id, userUpdate).subscribe(
       () => {
-        this.notificationsService.success('Success', `User ${this.username} updated.`)
+        this.notifier.success(this.i18n('User {{username}} updated.', { username: this.user.username }))
         this.router.navigate([ '/admin/users/list' ])
       },
 
@@ -100,18 +91,35 @@ export class UserUpdateComponent extends UserEdit implements OnInit, OnDestroy {
     return false
   }
 
-  getFormButtonTitle () {
-    return 'Update user'
+  isPasswordOptional () {
+    return false
   }
 
-  private onUserFetched (userJson: User) {
-    this.userId = userJson.id
-    this.username = userJson.username
+  getFormButtonTitle () {
+    return this.i18n('Update user')
+  }
+
+  resetPassword () {
+    this.userService.askResetPassword(this.user.email).subscribe(
+      () => {
+        this.notifier.success(
+          this.i18n('An email asking for password reset has been sent to {{username}}.', { username: this.user.username })
+        )
+      },
+
+      err => this.error = err.message
+    )
+  }
+
+  private onUserFetched (userJson: UserType) {
+    this.user = new User(userJson)
 
     this.form.patchValue({
       email: userJson.email,
-      role: userJson.role,
-      videoQuota: userJson.videoQuota
+      role: userJson.role.toString(),
+      videoQuota: userJson.videoQuota,
+      videoQuotaDaily: userJson.videoQuotaDaily,
+      byPassAutoBlock: userJson.adminFlags & UserAdminFlag.BYPASS_VIDEO_AUTO_BLACKLIST
     })
   }
 }

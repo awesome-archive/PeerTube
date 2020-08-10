@@ -1,15 +1,13 @@
 import { NgModule } from '@angular/core'
 import { RouterModule, Routes } from '@angular/router'
 import { ConfigRoutes } from '@app/+admin/config'
-
+import { ModerationRoutes } from '@app/+admin/moderation/moderation.routes'
+import { PluginsRoutes } from '@app/+admin/plugins/plugins.routes'
+import { SystemRoutes } from '@app/+admin/system'
 import { MetaGuard } from '@ngx-meta/core'
-
 import { AdminComponent } from './admin.component'
 import { FollowsRoutes } from './follows'
-import { JobsRoutes } from './jobs/job.routes'
 import { UsersRoutes } from './users'
-import { VideoAbusesRoutes } from './video-abuses'
-import { VideoBlacklistRoutes } from './video-blacklist'
 
 const adminRoutes: Routes = [
   {
@@ -25,10 +23,10 @@ const adminRoutes: Routes = [
       },
       ...FollowsRoutes,
       ...UsersRoutes,
-      ...VideoAbusesRoutes,
-      ...VideoBlacklistRoutes,
-      ...JobsRoutes,
-      ...ConfigRoutes
+      ...ModerationRoutes,
+      ...SystemRoutes,
+      ...ConfigRoutes,
+      ...PluginsRoutes
     ]
   }
 ]

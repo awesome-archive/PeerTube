@@ -1,16 +1,13 @@
-import * as kue from 'kue'
+import * as Bull from 'bull'
+import * as Bluebird from 'bluebird'
 import { logger } from '../../../helpers/logger'
 import { doRequest } from '../../../helpers/requests'
-import { ActorFollowModel } from '../../../models/activitypub/actor-follow'
-import { buildSignedRequestOptions, computeBody } from './utils/activitypub-http-utils'
+import { buildGlobalHeaders, buildSignedRequestOptions, computeBody } from './utils/activitypub-http-utils'
+import { BROADCAST_CONCURRENCY, JOB_REQUEST_TIMEOUT } from '../../../initializers/constants'
+import { ActorFollowScoreCache } from '../../files-cache'
+import { ActivitypubHttpBroadcastPayload } from '@shared/models'
 
-export type ActivitypubHttpBroadcastPayload = {
-  uris: string[]
-  signatureActorId?: number
-  body: any
-}
-
-async function processActivityPubHttpBroadcast (job: kue.Job) {
+async function processActivityPubHttpBroadcast (job: Bull.Job) {
   logger.info('Processing ActivityPub broadcast in job %d.', job.id)
 
   const payload = job.data as ActivitypubHttpBroadcastPayload
@@ -22,24 +19,21 @@ async function processActivityPubHttpBroadcast (job: kue.Job) {
     method: 'POST',
     uri: '',
     json: body,
-    httpSignature: httpSignatureOptions
+    httpSignature: httpSignatureOptions,
+    timeout: JOB_REQUEST_TIMEOUT,
+    headers: buildGlobalHeaders(body)
   }
 
   const badUrls: string[] = []
   const goodUrls: string[] = []
 
-  for (const uri of payload.uris) {
-    options.uri = uri
+  await Bluebird.map(payload.uris, uri => {
+    return doRequest(Object.assign({}, options, { uri }))
+      .then(() => goodUrls.push(uri))
+      .catch(() => badUrls.push(uri))
+  }, { concurrency: BROADCAST_CONCURRENCY })
 
-    try {
-      await doRequest(options)
-      goodUrls.push(uri)
-    } catch (err) {
-      badUrls.push(uri)
-    }
-  }
-
-  return ActorFollowModel.updateActorFollowsScore(goodUrls, badUrls, undefined)
+  return ActorFollowScoreCache.Instance.updateActorFollowsScore(goodUrls, badUrls)
 }
 
 // ---------------------------------------------------------------------------

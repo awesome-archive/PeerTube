@@ -1,33 +1,42 @@
-import { ActivityCreate, VideoTorrentObject } from '../../../../shared'
-import { DislikeObject, VideoAbuseObject, ViewObject } from '../../../../shared/models/activitypub/objects'
+import { isRedundancyAccepted } from '@server/lib/redundancy'
+import { ActivityCreate, CacheFileObject, VideoTorrentObject } from '../../../../shared'
+import { PlaylistObject } from '../../../../shared/models/activitypub/objects/playlist-object'
 import { VideoCommentObject } from '../../../../shared/models/activitypub/objects/video-comment-object'
 import { retryTransactionWrapper } from '../../../helpers/database-utils'
 import { logger } from '../../../helpers/logger'
-import { sequelizeTypescript } from '../../../initializers'
-import { AccountVideoRateModel } from '../../../models/account/account-video-rate'
-import { ActorModel } from '../../../models/activitypub/actor'
-import { VideoAbuseModel } from '../../../models/video/video-abuse'
-import { VideoCommentModel } from '../../../models/video/video-comment'
-import { getOrCreateActorAndServerAndModel } from '../actor'
-import { forwardActivity, getActorsInvolvedInVideo } from '../send/misc'
+import { sequelizeTypescript } from '../../../initializers/database'
+import { APProcessorOptions } from '../../../types/activitypub-processor.model'
+import { MActorSignature, MCommentOwnerVideo, MVideoAccountLightBlacklistAllFiles } from '../../../types/models'
+import { Notifier } from '../../notifier'
+import { createOrUpdateCacheFile } from '../cache-file'
+import { createOrUpdateVideoPlaylist } from '../playlist'
+import { forwardVideoRelatedActivity } from '../send/utils'
 import { resolveThread } from '../video-comments'
-import { getOrCreateAccountAndVideoAndChannel } from '../videos'
+import { getOrCreateVideoAndAccountAndChannel } from '../videos'
+import { isBlockedByServerOrAccount } from '@server/lib/blocklist'
 
-async function processCreateActivity (activity: ActivityCreate) {
+async function processCreateActivity (options: APProcessorOptions<ActivityCreate>) {
+  const { activity, byActor } = options
+
+  // Only notify if it is not from a fetcher job
+  const notify = options.fromFetch !== true
   const activityObject = activity.object
   const activityType = activityObject.type
-  const actor = await getOrCreateActorAndServerAndModel(activity.actor)
 
-  if (activityType === 'View') {
-    return processCreateView(actor, activity)
-  } else if (activityType === 'Dislike') {
-    return processCreateDislike(actor, activity)
-  } else if (activityType === 'Video') {
-    return processCreateVideo(actor, activity)
-  } else if (activityType === 'Flag') {
-    return processCreateVideoAbuse(actor, activityObject as VideoAbuseObject)
-  } else if (activityType === 'Note') {
-    return processCreateVideoComment(actor, activity)
+  if (activityType === 'Video') {
+    return processCreateVideo(activity, notify)
+  }
+
+  if (activityType === 'Note') {
+    return retryTransactionWrapper(processCreateVideoComment, activity, byActor, notify)
+  }
+
+  if (activityType === 'CacheFile') {
+    return retryTransactionWrapper(processCreateCacheFile, activity, byActor)
+  }
+
+  if (activityType === 'Playlist') {
+    return retryTransactionWrapper(processCreatePlaylist, activity, byActor)
   }
 
   logger.warn('Unknown activity object type %s when creating activity.', activityType, { activity: activity.id })
@@ -42,158 +51,79 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function processCreateVideo (
-  actor: ActorModel,
-  activity: ActivityCreate
-) {
+async function processCreateVideo (activity: ActivityCreate, notify: boolean) {
   const videoToCreateData = activity.object as VideoTorrentObject
 
-  const { video } = await getOrCreateAccountAndVideoAndChannel(videoToCreateData, actor)
+  const syncParam = { likes: false, dislikes: false, shares: false, comments: false, thumbnail: true, refreshVideo: false }
+  const { video, created } = await getOrCreateVideoAndAccountAndChannel({ videoObject: videoToCreateData, syncParam })
+
+  if (created && notify) Notifier.Instance.notifyOnNewVideoIfNeeded(video)
 
   return video
 }
 
-async function processCreateDislike (byActor: ActorModel, activity: ActivityCreate) {
-  const options = {
-    arguments: [ byActor, activity ],
-    errorMessage: 'Cannot dislike the video with many retries.'
-  }
+async function processCreateCacheFile (activity: ActivityCreate, byActor: MActorSignature) {
+  if (await isRedundancyAccepted(activity, byActor) !== true) return
 
-  return retryTransactionWrapper(createVideoDislike, options)
-}
+  const cacheFile = activity.object as CacheFileObject
 
-async function createVideoDislike (byActor: ActorModel, activity: ActivityCreate) {
-  const dislike = activity.object as DislikeObject
-  const byAccount = byActor.Account
+  const { video } = await getOrCreateVideoAndAccountAndChannel({ videoObject: cacheFile.object })
 
-  if (!byAccount) throw new Error('Cannot create dislike with the non account actor ' + byActor.url)
-
-  const { video } = await getOrCreateAccountAndVideoAndChannel(dislike.object)
-
-  return sequelizeTypescript.transaction(async t => {
-    const rate = {
-      type: 'dislike' as 'dislike',
-      videoId: video.id,
-      accountId: byAccount.id
-    }
-    const [ , created ] = await AccountVideoRateModel.findOrCreate({
-      where: rate,
-      defaults: rate,
-      transaction: t
-    })
-    if (created === true) await video.increment('dislikes', { transaction: t })
-
-    if (video.isOwned() && created === true) {
-      // Don't resend the activity to the sender
-      const exceptions = [ byActor ]
-      await forwardActivity(activity, t, exceptions)
-    }
+  await sequelizeTypescript.transaction(async t => {
+    return createOrUpdateCacheFile(cacheFile, video, byActor, t)
   })
-}
-
-async function processCreateView (byActor: ActorModel, activity: ActivityCreate) {
-  const view = activity.object as ViewObject
-
-  const { video } = await getOrCreateAccountAndVideoAndChannel(view.object)
-
-  const actor = await ActorModel.loadByUrl(view.actor)
-  if (!actor) throw new Error('Unknown actor ' + view.actor)
-
-  await video.increment('views')
 
   if (video.isOwned()) {
     // Don't resend the activity to the sender
     const exceptions = [ byActor ]
-    await forwardActivity(activity, undefined, exceptions)
+    await forwardVideoRelatedActivity(activity, undefined, exceptions, video)
   }
 }
 
-function processCreateVideoAbuse (actor: ActorModel, videoAbuseToCreateData: VideoAbuseObject) {
-  const options = {
-    arguments: [ actor, videoAbuseToCreateData ],
-    errorMessage: 'Cannot insert the remote video abuse with many retries.'
-  }
-
-  return retryTransactionWrapper(addRemoteVideoAbuse, options)
-}
-
-async function addRemoteVideoAbuse (actor: ActorModel, videoAbuseToCreateData: VideoAbuseObject) {
-  logger.debug('Reporting remote abuse for video %s.', videoAbuseToCreateData.object)
-
-  const account = actor.Account
-  if (!account) throw new Error('Cannot create dislike with the non account actor ' + actor.url)
-
-  const { video } = await getOrCreateAccountAndVideoAndChannel(videoAbuseToCreateData.object)
-
-  return sequelizeTypescript.transaction(async t => {
-    const videoAbuseData = {
-      reporterAccountId: account.id,
-      reason: videoAbuseToCreateData.content,
-      videoId: video.id
-    }
-
-    await VideoAbuseModel.create(videoAbuseData)
-
-    logger.info('Remote abuse for video uuid %s created', videoAbuseToCreateData.object)
-  })
-}
-
-function processCreateVideoComment (byActor: ActorModel, activity: ActivityCreate) {
-  const options = {
-    arguments: [ byActor, activity ],
-    errorMessage: 'Cannot create video comment with many retries.'
-  }
-
-  return retryTransactionWrapper(createVideoComment, options)
-}
-
-async function createVideoComment (byActor: ActorModel, activity: ActivityCreate) {
-  const comment = activity.object as VideoCommentObject
+async function processCreateVideoComment (activity: ActivityCreate, byActor: MActorSignature, notify: boolean) {
+  const commentObject = activity.object as VideoCommentObject
   const byAccount = byActor.Account
 
   if (!byAccount) throw new Error('Cannot create video comment with the non account actor ' + byActor.url)
 
-  const { video, parents } = await resolveThread(comment.inReplyTo)
+  let video: MVideoAccountLightBlacklistAllFiles
+  let created: boolean
+  let comment: MCommentOwnerVideo
+  try {
+    const resolveThreadResult = await resolveThread({ url: commentObject.id, isVideo: false })
+    video = resolveThreadResult.video
+    created = resolveThreadResult.commentCreated
+    comment = resolveThreadResult.comment
+  } catch (err) {
+    logger.debug(
+      'Cannot process video comment because we could not resolve thread %s. Maybe it was not a video thread, so skip it.',
+      commentObject.inReplyTo,
+      { err }
+    )
+    return
+  }
 
-  return sequelizeTypescript.transaction(async t => {
-    let originCommentId = null
-    let inReplyToCommentId = null
+  // Try to not forward unwanted commments on our videos
+  if (video.isOwned() && await isBlockedByServerOrAccount(comment.Account, video.VideoChannel.Account)) {
+    logger.info('Skip comment forward from blocked account or server %s.', comment.Account.Actor.url)
+    return
+  }
 
-    if (parents.length !== 0) {
-      const parent = parents[0]
+  if (video.isOwned() && created === true) {
+    // Don't resend the activity to the sender
+    const exceptions = [ byActor ]
 
-      originCommentId = parent.getThreadId()
-      inReplyToCommentId = parent.id
-    }
+    await forwardVideoRelatedActivity(activity, undefined, exceptions, video)
+  }
 
-    // This is a new thread
-    const objectToCreate = {
-      url: comment.id,
-      text: comment.content,
-      originCommentId,
-      inReplyToCommentId,
-      videoId: video.id,
-      accountId: byAccount.id
-    }
+  if (created && notify) Notifier.Instance.notifyOnNewComment(comment)
+}
 
-    const options = {
-      where: {
-        url: objectToCreate.url
-      },
-      defaults: objectToCreate,
-      transaction: t
-    }
-    const [ ,created ] = await VideoCommentModel.findOrCreate(options)
+async function processCreatePlaylist (activity: ActivityCreate, byActor: MActorSignature) {
+  const playlistObject = activity.object as PlaylistObject
+  const byAccount = byActor.Account
 
-    if (video.isOwned() && created === true) {
-      // Don't resend the activity to the sender
-      const exceptions = [ byActor ]
+  if (!byAccount) throw new Error('Cannot create video playlist with the non account actor ' + byActor.url)
 
-      // Mastodon does not add our announces in audience, so we forward to them manually
-      const additionalActors = await getActorsInvolvedInVideo(video, t)
-      const additionalFollowerUrls = additionalActors.map(a => a.followersUrl)
-
-      await forwardActivity(activity, t, exceptions, additionalFollowerUrls)
-    }
-  })
+  await createOrUpdateVideoPlaylist(playlistObject, byAccount, activity.to)
 }

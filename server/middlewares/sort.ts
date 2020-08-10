@@ -1,15 +1,14 @@
 import * as express from 'express'
-import 'express-validator'
-import { SortType } from '../helpers/utils'
+import { SortType } from '../models/utils'
 
-function setDefaultSort (req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!req.query.sort) req.query.sort = '-createdAt'
+const setDefaultSort = setDefaultSortFactory('-createdAt')
 
-  return next()
-}
+const setDefaultVideoRedundanciesSort = setDefaultSortFactory('name')
+
+const setDefaultSearchSort = setDefaultSortFactory('-match')
 
 function setBlacklistSort (req: express.Request, res: express.Response, next: express.NextFunction) {
-  let newSort: SortType = { sortModel: undefined, sortValue: undefined }
+  const newSort: SortType = { sortModel: undefined, sortValue: '' }
 
   if (!req.query.sort) req.query.sort = '-createdAt'
 
@@ -33,5 +32,17 @@ function setBlacklistSort (req: express.Request, res: express.Response, next: ex
 
 export {
   setDefaultSort,
+  setDefaultSearchSort,
+  setDefaultVideoRedundanciesSort,
   setBlacklistSort
+}
+
+// ---------------------------------------------------------------------------
+
+function setDefaultSortFactory (sort: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!req.query.sort) req.query.sort = sort
+
+    return next()
+  }
 }

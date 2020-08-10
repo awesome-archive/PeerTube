@@ -1,17 +1,20 @@
 import { ActivityAnnounce } from '../../../../shared/models/activitypub'
 import { retryTransactionWrapper } from '../../../helpers/database-utils'
-import { sequelizeTypescript } from '../../../initializers'
-import { ActorModel } from '../../../models/activitypub/actor'
-import { VideoModel } from '../../../models/video/video'
+import { sequelizeTypescript } from '../../../initializers/database'
 import { VideoShareModel } from '../../../models/video/video-share'
-import { getOrCreateActorAndServerAndModel } from '../actor'
-import { forwardActivity } from '../send/misc'
-import { getOrCreateAccountAndVideoAndChannel } from '../videos'
+import { forwardVideoRelatedActivity } from '../send/utils'
+import { getOrCreateVideoAndAccountAndChannel } from '../videos'
+import { Notifier } from '../../notifier'
+import { logger } from '../../../helpers/logger'
+import { APProcessorOptions } from '../../../types/activitypub-processor.model'
+import { MActorSignature, MVideoAccountLightBlacklistAllFiles } from '../../../types/models'
 
-async function processAnnounceActivity (activity: ActivityAnnounce) {
-  const actorAnnouncer = await getOrCreateActorAndServerAndModel(activity.actor)
+async function processAnnounceActivity (options: APProcessorOptions<ActivityAnnounce>) {
+  const { activity, byActor: actorAnnouncer } = options
+  // Only notify if it is not from a fetcher job
+  const notify = options.fromFetch !== true
 
-  return processVideoShare(actorAnnouncer, activity)
+  return retryTransactionWrapper(processVideoShare, actorAnnouncer, activity, notify)
 }
 
 // ---------------------------------------------------------------------------
@@ -22,23 +25,22 @@ export {
 
 // ---------------------------------------------------------------------------
 
-function processVideoShare (actorAnnouncer: ActorModel, activity: ActivityAnnounce) {
-  const options = {
-    arguments: [ actorAnnouncer, activity ],
-    errorMessage: 'Cannot share the video activity with many retries.'
+async function processVideoShare (actorAnnouncer: MActorSignature, activity: ActivityAnnounce, notify: boolean) {
+  const objectUri = typeof activity.object === 'string' ? activity.object : activity.object.id
+
+  let video: MVideoAccountLightBlacklistAllFiles
+  let videoCreated: boolean
+
+  try {
+    const result = await getOrCreateVideoAndAccountAndChannel({ videoObject: objectUri })
+    video = result.video
+    videoCreated = result.created
+  } catch (err) {
+    logger.debug('Cannot process share of %s. Maybe this is not a video object, so just skipping.', objectUri, { err })
+    return
   }
 
-  return retryTransactionWrapper(shareVideo, options)
-}
-
-async function shareVideo (actorAnnouncer: ActorModel, activity: ActivityAnnounce) {
-  const objectUri = typeof activity.object === 'string' ? activity.object : activity.object.id
-  let video: VideoModel
-
-  const res = await getOrCreateAccountAndVideoAndChannel(objectUri)
-  video = res.video
-
-  return sequelizeTypescript.transaction(async t => {
+  await sequelizeTypescript.transaction(async t => {
     // Add share entry
 
     const share = {
@@ -58,9 +60,12 @@ async function shareVideo (actorAnnouncer: ActorModel, activity: ActivityAnnounc
     if (video.isOwned() && created === true) {
       // Don't resend the activity to the sender
       const exceptions = [ actorAnnouncer ]
-      await forwardActivity(activity, t, exceptions)
+
+      await forwardVideoRelatedActivity(activity, t, exceptions, video)
     }
 
     return undefined
   })
+
+  if (videoCreated && notify) Notifier.Instance.notifyOnNewVideoIfNeeded(video)
 }

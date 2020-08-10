@@ -3,6 +3,8 @@
 set -eu
 
 npm run build:server
-npm run travis -- lint
+npm run setup:cli
 
-mocha --exit --require ts-node/register/type-check --bail server/tests/index.ts
+npm run ci -- lint
+
+mocha --exit --require ts-node/register/type-check --require tsconfig-paths/register --bail server/tests/index.ts

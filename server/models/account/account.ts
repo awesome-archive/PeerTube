@@ -1,52 +1,134 @@
-import * as Sequelize from 'sequelize'
 import {
   AllowNull,
   BeforeDestroy,
   BelongsTo,
   Column,
   CreatedAt,
+  DataType,
   Default,
   DefaultScope,
   ForeignKey,
   HasMany,
   Is,
   Model,
+  Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
-import { Account } from '../../../shared/models/actors'
+import { Account, AccountSummary } from '../../../shared/models/actors'
 import { isAccountDescriptionValid } from '../../helpers/custom-validators/accounts'
-import { logger } from '../../helpers/logger'
 import { sendDeleteActor } from '../../lib/activitypub/send'
 import { ActorModel } from '../activitypub/actor'
 import { ApplicationModel } from '../application/application'
-import { AvatarModel } from '../avatar/avatar'
 import { ServerModel } from '../server/server'
 import { getSort, throwIfNotValid } from '../utils'
 import { VideoChannelModel } from '../video/video-channel'
 import { VideoCommentModel } from '../video/video-comment'
 import { UserModel } from './user'
+import { AvatarModel } from '../avatar/avatar'
+import { VideoPlaylistModel } from '../video/video-playlist'
+import { CONSTRAINTS_FIELDS, SERVER_ACTOR_NAME, WEBSERVER } from '../../initializers/constants'
+import { FindOptions, IncludeOptions, Op, Transaction, WhereOptions } from 'sequelize'
+import { AccountBlocklistModel } from './account-blocklist'
+import { ServerBlocklistModel } from '../server/server-blocklist'
+import { ActorFollowModel } from '../activitypub/actor-follow'
+import { MAccountActor, MAccountAP, MAccountDefault, MAccountFormattable, MAccountSummaryFormattable, MAccount } from '../../types/models'
+import * as Bluebird from 'bluebird'
+import { ModelCache } from '@server/models/model-cache'
+import { VideoModel } from '../video/video'
 
-@DefaultScope({
+export enum ScopeNames {
+  SUMMARY = 'SUMMARY'
+}
+
+export type SummaryOptions = {
+  actorRequired?: boolean // Default: true
+  whereActor?: WhereOptions
+  withAccountBlockerIds?: number[]
+}
+
+@DefaultScope(() => ({
   include: [
     {
-      model: () => ActorModel,
-      required: true,
+      model: ActorModel, // Default scope includes avatar and server
+      required: true
+    }
+  ]
+}))
+@Scopes(() => ({
+  [ScopeNames.SUMMARY]: (options: SummaryOptions = {}) => {
+    const whereActor = options.whereActor || undefined
+
+    const serverInclude: IncludeOptions = {
+      attributes: [ 'host' ],
+      model: ServerModel.unscoped(),
+      required: false
+    }
+
+    const query: FindOptions = {
+      attributes: [ 'id', 'name', 'actorId' ],
       include: [
         {
-          model: () => ServerModel,
-          required: false
-        },
-        {
-          model: () => AvatarModel,
-          required: false
+          attributes: [ 'id', 'preferredUsername', 'url', 'serverId', 'avatarId' ],
+          model: ActorModel.unscoped(),
+          required: options.actorRequired ?? true,
+          where: whereActor,
+          include: [
+            serverInclude,
+
+            {
+              model: AvatarModel.unscoped(),
+              required: false
+            }
+          ]
         }
       ]
     }
-  ]
-})
+
+    if (options.withAccountBlockerIds) {
+      query.include.push({
+        attributes: [ 'id' ],
+        model: AccountBlocklistModel.unscoped(),
+        as: 'BlockedAccounts',
+        required: false,
+        where: {
+          accountId: {
+            [Op.in]: options.withAccountBlockerIds
+          }
+        }
+      })
+
+      serverInclude.include = [
+        {
+          attributes: [ 'id' ],
+          model: ServerBlocklistModel.unscoped(),
+          required: false,
+          where: {
+            accountId: {
+              [Op.in]: options.withAccountBlockerIds
+            }
+          }
+        }
+      ]
+    }
+
+    return query
+  }
+}))
 @Table({
-  tableName: 'account'
+  tableName: 'account',
+  indexes: [
+    {
+      fields: [ 'actorId' ],
+      unique: true
+    },
+    {
+      fields: [ 'applicationId' ]
+    },
+    {
+      fields: [ 'userId' ]
+    }
+  ]
 })
 export class AccountModel extends Model<AccountModel> {
 
@@ -56,8 +138,8 @@ export class AccountModel extends Model<AccountModel> {
 
   @AllowNull(true)
   @Default(null)
-  @Is('AccountDescription', value => throwIfNotValid(value, isAccountDescriptionValid, 'description'))
-  @Column
+  @Is('AccountDescription', value => throwIfNotValid(value, isAccountDescriptionValid, 'description', true))
+  @Column(DataType.STRING(CONSTRAINTS_FIELDS.USERS.DESCRIPTION.max))
   description: string
 
   @CreatedAt
@@ -111,80 +193,101 @@ export class AccountModel extends Model<AccountModel> {
   })
   VideoChannels: VideoChannelModel[]
 
-  @HasMany(() => VideoCommentModel, {
+  @HasMany(() => VideoPlaylistModel, {
     foreignKey: {
       allowNull: false
     },
     onDelete: 'cascade',
     hooks: true
   })
+  VideoPlaylists: VideoPlaylistModel[]
+
+  @HasMany(() => VideoCommentModel, {
+    foreignKey: {
+      allowNull: true
+    },
+    onDelete: 'cascade',
+    hooks: true
+  })
   VideoComments: VideoCommentModel[]
+
+  @HasMany(() => AccountBlocklistModel, {
+    foreignKey: {
+      name: 'targetAccountId',
+      allowNull: false
+    },
+    as: 'BlockedAccounts',
+    onDelete: 'CASCADE'
+  })
+  BlockedAccounts: AccountBlocklistModel[]
 
   @BeforeDestroy
   static async sendDeleteIfOwned (instance: AccountModel, options) {
     if (!instance.Actor) {
-      instance.Actor = await instance.$get('Actor', { transaction: options.transaction }) as ActorModel
+      instance.Actor = await instance.$get('Actor', { transaction: options.transaction })
     }
 
+    await ActorFollowModel.removeFollowsOf(instance.Actor.id, options.transaction)
     if (instance.isOwned()) {
-      logger.debug('Sending delete of actor of account %s.', instance.Actor.url)
       return sendDeleteActor(instance.Actor, options.transaction)
     }
 
     return undefined
   }
 
-  static load (id: number) {
-    return AccountModel.findById(id)
+  static load (id: number, transaction?: Transaction): Bluebird<MAccountDefault> {
+    return AccountModel.findByPk(id, { transaction })
   }
 
-  static loadByUUID (uuid: string) {
-    const query = {
-      include: [
-        {
-          model: ActorModel,
-          required: true,
-          where: {
-            uuid
-          }
-        }
-      ]
-    }
+  static loadByNameWithHost (nameWithHost: string): Bluebird<MAccountDefault> {
+    const [ accountName, host ] = nameWithHost.split('@')
 
-    return AccountModel.findOne(query)
+    if (!host || host === WEBSERVER.HOST) return AccountModel.loadLocalByName(accountName)
+
+    return AccountModel.loadByNameAndHost(accountName, host)
   }
 
-  static loadLocalByName (name: string) {
-    const query = {
-      where: {
-        [ Sequelize.Op.or ]: [
-          {
-            userId: {
-              [ Sequelize.Op.ne ]: null
+  static loadLocalByName (name: string): Bluebird<MAccountDefault> {
+    const fun = () => {
+      const query = {
+        where: {
+          [Op.or]: [
+            {
+              userId: {
+                [Op.ne]: null
+              }
+            },
+            {
+              applicationId: {
+                [Op.ne]: null
+              }
             }
-          },
+          ]
+        },
+        include: [
           {
-            applicationId: {
-              [ Sequelize.Op.ne ]: null
+            model: ActorModel,
+            required: true,
+            where: {
+              preferredUsername: name
             }
           }
         ]
-      },
-      include: [
-        {
-          model: ActorModel,
-          required: true,
-          where: {
-            preferredUsername: name
-          }
-        }
-      ]
+      }
+
+      return AccountModel.findOne(query)
     }
 
-    return AccountModel.findOne(query)
+    return ModelCache.Instance.doCache({
+      cacheType: 'local-account-name',
+      key: name,
+      fun,
+      // The server actor never change, so we can easily cache it
+      whitelist: () => name === SERVER_ACTOR_NAME
+    })
   }
 
-  static loadLocalByNameAndHost (name: string, host: string) {
+  static loadByNameAndHost (name: string, host: string): Bluebird<MAccountDefault> {
     const query = {
       include: [
         {
@@ -209,7 +312,7 @@ export class AccountModel extends Model<AccountModel> {
     return AccountModel.findOne(query)
   }
 
-  static loadByUrl (url: string, transaction?: Sequelize.Transaction) {
+  static loadByUrl (url: string, transaction?: Transaction): Bluebird<MAccountDefault> {
     const query = {
       include: [
         {
@@ -242,21 +345,83 @@ export class AccountModel extends Model<AccountModel> {
       })
   }
 
-  toFormattedJSON (): Account {
+  static loadAccountIdFromVideo (videoId: number): Bluebird<MAccount> {
+    const query = {
+      include: [
+        {
+          attributes: [ 'id', 'accountId' ],
+          model: VideoChannelModel.unscoped(),
+          required: true,
+          include: [
+            {
+              attributes: [ 'id', 'channelId' ],
+              model: VideoModel.unscoped(),
+              where: {
+                id: videoId
+              }
+            }
+          ]
+        }
+      ]
+    }
+
+    return AccountModel.findOne(query)
+  }
+
+  static listLocalsForSitemap (sort: string): Bluebird<MAccountActor[]> {
+    const query = {
+      attributes: [ ],
+      offset: 0,
+      order: getSort(sort),
+      include: [
+        {
+          attributes: [ 'preferredUsername', 'serverId' ],
+          model: ActorModel.unscoped(),
+          where: {
+            serverId: null
+          }
+        }
+      ]
+    }
+
+    return AccountModel
+      .unscoped()
+      .findAll(query)
+  }
+
+  getClientUrl () {
+    return WEBSERVER.URL + '/accounts/' + this.Actor.getIdentifier()
+  }
+
+  toFormattedJSON (this: MAccountFormattable): Account {
     const actor = this.Actor.toFormattedJSON()
     const account = {
       id: this.id,
-      displayName: this.name,
+      displayName: this.getDisplayName(),
       description: this.description,
       createdAt: this.createdAt,
-      updatedAt: this.updatedAt
+      updatedAt: this.updatedAt,
+      userId: this.userId ? this.userId : undefined
     }
 
     return Object.assign(actor, account)
   }
 
-  toActivityPubObject () {
-    const obj = this.Actor.toActivityPubObject(this.name, 'Account')
+  toFormattedSummaryJSON (this: MAccountSummaryFormattable): AccountSummary {
+    const actor = this.Actor.toFormattedSummaryJSON()
+
+    return {
+      id: this.id,
+      name: actor.name,
+      displayName: this.getDisplayName(),
+      url: actor.url,
+      host: actor.host,
+      avatar: actor.avatar
+    }
+  }
+
+  toActivityPubObject (this: MAccountAP) {
+    const obj = this.Actor.toActivityPubObject(this.name)
 
     return Object.assign(obj, {
       summary: this.description
@@ -265,5 +430,17 @@ export class AccountModel extends Model<AccountModel> {
 
   isOwned () {
     return this.Actor.isOwned()
+  }
+
+  isOutdated () {
+    return this.Actor.isOutdated()
+  }
+
+  getDisplayName () {
+    return this.name
+  }
+
+  isBlocked () {
+    return this.BlockedAccounts && this.BlockedAccounts.length !== 0
   }
 }

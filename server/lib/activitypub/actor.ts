@@ -1,78 +1,136 @@
 import * as Bluebird from 'bluebird'
-import { join } from 'path'
 import { Transaction } from 'sequelize'
-import * as url from 'url'
-import * as uuidv4 from 'uuid/v4'
-import { ActivityPubActor, ActivityPubActorType } from '../../../shared/models/activitypub'
+import { URL } from 'url'
+import { v4 as uuidv4 } from 'uuid'
+import { ActivityPubActor, ActivityPubActorType, ActivityPubOrderedCollection } from '../../../shared/models/activitypub'
 import { ActivityPubAttributedTo } from '../../../shared/models/activitypub/objects'
-import { getActorUrl } from '../../helpers/activitypub'
-import { isActorObjectValid } from '../../helpers/custom-validators/activitypub/actor'
+import { checkUrlsSameHost, getAPId } from '../../helpers/activitypub'
+import { sanitizeAndCheckActorObject } from '../../helpers/custom-validators/activitypub/actor'
 import { isActivityPubUrlValid } from '../../helpers/custom-validators/activitypub/misc'
 import { retryTransactionWrapper, updateInstanceWithAnother } from '../../helpers/database-utils'
 import { logger } from '../../helpers/logger'
 import { createPrivateAndPublicKeys } from '../../helpers/peertube-crypto'
-import { doRequest, doRequestAndSaveToFile } from '../../helpers/requests'
+import { doRequest } from '../../helpers/requests'
 import { getUrlFromWebfinger } from '../../helpers/webfinger'
-import { IMAGE_MIMETYPE_EXT, CONFIG, sequelizeTypescript, CONSTRAINTS_FIELDS } from '../../initializers'
+import { MIMETYPES, WEBSERVER } from '../../initializers/constants'
 import { AccountModel } from '../../models/account/account'
 import { ActorModel } from '../../models/activitypub/actor'
 import { AvatarModel } from '../../models/avatar/avatar'
 import { ServerModel } from '../../models/server/server'
 import { VideoChannelModel } from '../../models/video/video-channel'
-import { truncate } from 'lodash'
+import { JobQueue } from '../job-queue'
+import { ActorFetchByUrlType, fetchActorByUrl } from '../../helpers/actor'
+import { sequelizeTypescript } from '../../initializers/database'
+import {
+  MAccount,
+  MAccountDefault,
+  MActor,
+  MActorAccountChannelId,
+  MActorAccountChannelIdActor,
+  MActorAccountId,
+  MActorDefault,
+  MActorFull,
+  MActorFullActor,
+  MActorId,
+  MChannel
+} from '../../types/models'
+import { extname } from 'path'
+import { getServerActor } from '@server/models/application/application'
 
 // Set account keys, this could be long so process after the account creation and do not block the client
-function setAsyncActorKeys (actor: ActorModel) {
+function setAsyncActorKeys <T extends MActor> (actor: T) {
   return createPrivateAndPublicKeys()
     .then(({ publicKey, privateKey }) => {
-      actor.set('publicKey', publicKey)
-      actor.set('privateKey', privateKey)
+      actor.publicKey = publicKey
+      actor.privateKey = privateKey
       return actor.save()
     })
     .catch(err => {
-      logger.error('Cannot set public/private keys of actor %d.', actor.uuid, { err })
+      logger.error('Cannot set public/private keys of actor %d.', actor.url, { err })
       return actor
     })
 }
 
-async function getOrCreateActorAndServerAndModel (activityActor: string | ActivityPubActor, recurseIfNeeded = true) {
-  const actorUrl = getActorUrl(activityActor)
+function getOrCreateActorAndServerAndModel (
+  activityActor: string | ActivityPubActor,
+  fetchType: 'all',
+  recurseIfNeeded?: boolean,
+  updateCollections?: boolean
+): Promise<MActorFullActor>
 
-  let actor = await ActorModel.loadByUrl(actorUrl)
+function getOrCreateActorAndServerAndModel (
+  activityActor: string | ActivityPubActor,
+  fetchType?: 'association-ids',
+  recurseIfNeeded?: boolean,
+  updateCollections?: boolean
+): Promise<MActorAccountChannelId>
+
+async function getOrCreateActorAndServerAndModel (
+  activityActor: string | ActivityPubActor,
+  fetchType: ActorFetchByUrlType = 'association-ids',
+  recurseIfNeeded = true,
+  updateCollections = false
+): Promise<MActorFullActor | MActorAccountChannelId> {
+  const actorUrl = getAPId(activityActor)
+  let created = false
+  let accountPlaylistsUrl: string
+
+  let actor = await fetchActorByUrl(actorUrl, fetchType)
+  // Orphan actor (not associated to an account of channel) so recreate it
+  if (actor && (!actor.Account && !actor.VideoChannel)) {
+    await actor.destroy()
+    actor = null
+  }
 
   // We don't have this actor in our database, fetch it on remote
   if (!actor) {
-    const result = await fetchRemoteActor(actorUrl)
-    if (result === undefined) throw new Error('Cannot fetch remote actor.')
+    const { result } = await fetchRemoteActor(actorUrl)
+    if (result === undefined) throw new Error('Cannot fetch remote actor ' + actorUrl)
 
     // Create the attributed to actor
     // In PeerTube a video channel is owned by an account
-    let ownerActor: ActorModel = undefined
+    let ownerActor: MActorFullActor
     if (recurseIfNeeded === true && result.actor.type === 'Group') {
       const accountAttributedTo = result.attributedTo.find(a => a.type === 'Person')
       if (!accountAttributedTo) throw new Error('Cannot find account attributed to video channel ' + actor.url)
 
+      if (checkUrlsSameHost(accountAttributedTo.id, actorUrl) !== true) {
+        throw new Error(`Account attributed to ${accountAttributedTo.id} does not have the same host than actor url ${actorUrl}`)
+      }
+
       try {
-        // Assert we don't recurse another time
-        ownerActor = await getOrCreateActorAndServerAndModel(accountAttributedTo.id, false)
+        // Don't recurse another time
+        const recurseIfNeeded = false
+        ownerActor = await getOrCreateActorAndServerAndModel(accountAttributedTo.id, 'all', recurseIfNeeded)
       } catch (err) {
         logger.error('Cannot get or create account attributed to video channel ' + actor.url)
         throw new Error(err)
       }
     }
 
-    const options = {
-      arguments: [ result, ownerActor ],
-      errorMessage: 'Cannot save actor and server with many retries.'
-    }
-    actor = await retryTransactionWrapper(saveActorAndServerAndModelIfNotExist, options)
+    actor = await retryTransactionWrapper(saveActorAndServerAndModelIfNotExist, result, ownerActor)
+    created = true
+    accountPlaylistsUrl = result.playlists
   }
 
-  const options = {
-    arguments: [ actor ],
-    errorMessage: 'Cannot refresh actor if needed with many retries.'
+  if (actor.Account) (actor as MActorAccountChannelIdActor).Account.Actor = actor
+  if (actor.VideoChannel) (actor as MActorAccountChannelIdActor).VideoChannel.Actor = actor
+
+  const { actor: actorRefreshed, refreshed } = await retryTransactionWrapper(refreshActorIfNeeded, actor, fetchType)
+  if (!actorRefreshed) throw new Error('Actor ' + actor.url + ' does not exist anymore.')
+
+  if ((created === true || refreshed === true) && updateCollections === true) {
+    const payload = { uri: actor.outboxUrl, type: 'activity' as 'activity' }
+    await JobQueue.Instance.createJobWithPromise({ type: 'activitypub-http-fetcher', payload })
   }
-  return retryTransactionWrapper(refreshActorIfNeeded, options)
+
+  // We created a new account: fetch the playlists
+  if (created === true && actor.Account && accountPlaylistsUrl) {
+    const payload = { uri: accountPlaylistsUrl, accountId: actor.Account.id, type: 'account-playlists' as 'account-playlists' }
+    await JobQueue.Instance.createJobWithPromise({ type: 'activitypub-http-fetcher', payload })
+  }
+
+  return actorRefreshed
 }
 
 function buildActorInstance (type: ActivityPubActorType, url: string, preferredUsername: string, uuid?: string) {
@@ -87,49 +145,57 @@ function buildActorInstance (type: ActivityPubActorType, url: string, preferredU
     followingCount: 0,
     inboxUrl: url + '/inbox',
     outboxUrl: url + '/outbox',
-    sharedInboxUrl: CONFIG.WEBSERVER.URL + '/inbox',
+    sharedInboxUrl: WEBSERVER.URL + '/inbox',
     followersUrl: url + '/followers',
     followingUrl: url + '/following'
-  })
+  }) as MActor
 }
 
 async function updateActorInstance (actorInstance: ActorModel, attributes: ActivityPubActor) {
   const followersCount = await fetchActorTotalItems(attributes.followers)
   const followingCount = await fetchActorTotalItems(attributes.following)
 
-  actorInstance.set('type', attributes.type)
-  actorInstance.set('uuid', attributes.uuid)
-  actorInstance.set('preferredUsername', attributes.preferredUsername)
-  actorInstance.set('url', attributes.id)
-  actorInstance.set('publicKey', attributes.publicKey.publicKeyPem)
-  actorInstance.set('followersCount', followersCount)
-  actorInstance.set('followingCount', followingCount)
-  actorInstance.set('inboxUrl', attributes.inbox)
-  actorInstance.set('outboxUrl', attributes.outbox)
-  actorInstance.set('sharedInboxUrl', attributes.endpoints.sharedInbox)
-  actorInstance.set('followersUrl', attributes.followers)
-  actorInstance.set('followingUrl', attributes.following)
+  actorInstance.type = attributes.type
+  actorInstance.preferredUsername = attributes.preferredUsername
+  actorInstance.url = attributes.id
+  actorInstance.publicKey = attributes.publicKey.publicKeyPem
+  actorInstance.followersCount = followersCount
+  actorInstance.followingCount = followingCount
+  actorInstance.inboxUrl = attributes.inbox
+  actorInstance.outboxUrl = attributes.outbox
+  actorInstance.followersUrl = attributes.followers
+  actorInstance.followingUrl = attributes.following
+
+  if (attributes.endpoints?.sharedInbox) {
+    actorInstance.sharedInboxUrl = attributes.endpoints.sharedInbox
+  }
 }
 
-async function updateActorAvatarInstance (actorInstance: ActorModel, avatarName: string, t: Transaction) {
-  if (avatarName !== undefined) {
-    if (actorInstance.avatarId) {
-      try {
-        await actorInstance.Avatar.destroy({ transaction: t })
-      } catch (err) {
-        logger.error('Cannot remove old avatar of actor %s.', actorInstance.url, { err })
-      }
+type AvatarInfo = { name: string, onDisk: boolean, fileUrl: string }
+async function updateActorAvatarInstance (actor: MActorDefault, info: AvatarInfo, t: Transaction) {
+  if (!info.name) return actor
+
+  if (actor.Avatar) {
+    // Don't update the avatar if the file URL did not change
+    if (info.fileUrl && actor.Avatar.fileUrl === info.fileUrl) return actor
+
+    try {
+      await actor.Avatar.destroy({ transaction: t })
+    } catch (err) {
+      logger.error('Cannot remove old avatar of actor %s.', actor.url, { err })
     }
-
-    const avatar = await AvatarModel.create({
-      filename: avatarName
-    }, { transaction: t })
-
-    actorInstance.set('avatarId', avatar.id)
-    actorInstance.Avatar = avatar
   }
 
-  return actorInstance
+  const avatar = await AvatarModel.create({
+    filename: info.name,
+    onDisk: info.onDisk,
+    fileUrl: info.fileUrl
+  }, { transaction: t })
+
+  actor.avatarId = avatar.id
+  actor.Avatar = avatar
+
+  return actor
 }
 
 async function fetchActorTotalItems (url: string) {
@@ -141,7 +207,7 @@ async function fetchActorTotalItems (url: string) {
   }
 
   try {
-    const { body } = await doRequest(options)
+    const { body } = await doRequest<ActivityPubOrderedCollection<unknown>>(options)
     return body.totalItems ? body.totalItems : 0
   } catch (err) {
     logger.warn('Cannot fetch remote actor count %s.', url, { err })
@@ -149,43 +215,118 @@ async function fetchActorTotalItems (url: string) {
   }
 }
 
-async function fetchAvatarIfExists (actorJSON: ActivityPubActor) {
-  if (
-    actorJSON.icon && actorJSON.icon.type === 'Image' && IMAGE_MIMETYPE_EXT[actorJSON.icon.mediaType] !== undefined &&
-    isActivityPubUrlValid(actorJSON.icon.url)
-  ) {
-    const extension = IMAGE_MIMETYPE_EXT[actorJSON.icon.mediaType]
+function getAvatarInfoIfExists (actorJSON: ActivityPubActor) {
+  const mimetypes = MIMETYPES.IMAGE
+  const icon = actorJSON.icon
 
-    const avatarName = uuidv4() + extension
-    const destPath = join(CONFIG.STORAGE.AVATARS_DIR, avatarName)
+  if (!icon || icon.type !== 'Image' || !isActivityPubUrlValid(icon.url)) return undefined
 
-    await doRequestAndSaveToFile({
-      method: 'GET',
-      uri: actorJSON.icon.url
-    }, destPath)
+  let extension: string
 
-    return avatarName
+  if (icon.mediaType) {
+    extension = mimetypes.MIMETYPE_EXT[icon.mediaType]
+  } else {
+    const tmp = extname(icon.url)
+
+    if (mimetypes.EXT_MIMETYPE[tmp] !== undefined) extension = tmp
   }
 
-  return undefined
+  if (!extension) return undefined
+
+  return {
+    name: uuidv4() + extension,
+    fileUrl: icon.url
+  }
 }
 
-function normalizeActor (actor: any) {
-  if (!actor) return
-
-  if (!actor.url || typeof actor.url !== 'string') {
-    actor.url = actor.url.href || actor.url.url
+async function addFetchOutboxJob (actor: Pick<ActorModel, 'id' | 'outboxUrl'>) {
+  // Don't fetch ourselves
+  const serverActor = await getServerActor()
+  if (serverActor.id === actor.id) {
+    logger.error('Cannot fetch our own outbox!')
+    return undefined
   }
 
-  if (actor.summary && typeof actor.summary === 'string') {
-    actor.summary = truncate(actor.summary, { length: CONSTRAINTS_FIELDS.USERS.DESCRIPTION.max })
+  const payload = {
+    uri: actor.outboxUrl,
+    type: 'activity' as 'activity'
+  }
 
-    if (actor.summary.length < CONSTRAINTS_FIELDS.USERS.DESCRIPTION.min) {
-      actor.summary = null
+  return JobQueue.Instance.createJob({ type: 'activitypub-http-fetcher', payload })
+}
+
+async function refreshActorIfNeeded <T extends MActorFull | MActorAccountChannelId> (
+  actorArg: T,
+  fetchedType: ActorFetchByUrlType
+): Promise<{ actor: T | MActorFull, refreshed: boolean }> {
+  if (!actorArg.isOutdated()) return { actor: actorArg, refreshed: false }
+
+  // We need more attributes
+  const actor = fetchedType === 'all'
+    ? actorArg as MActorFull
+    : await ActorModel.loadByUrlAndPopulateAccountAndChannel(actorArg.url)
+
+  try {
+    let actorUrl: string
+    try {
+      actorUrl = await getUrlFromWebfinger(actor.preferredUsername + '@' + actor.getHost())
+    } catch (err) {
+      logger.warn('Cannot get actor URL from webfinger, keeping the old one.', err)
+      actorUrl = actor.url
     }
-  }
 
-  return
+    const { result, statusCode } = await fetchRemoteActor(actorUrl)
+
+    if (statusCode === 404) {
+      logger.info('Deleting actor %s because there is a 404 in refresh actor.', actor.url)
+      actor.Account
+        ? await actor.Account.destroy()
+        : await actor.VideoChannel.destroy()
+
+      return { actor: undefined, refreshed: false }
+    }
+
+    if (result === undefined) {
+      logger.warn('Cannot fetch remote actor in refresh actor.')
+      return { actor, refreshed: false }
+    }
+
+    return sequelizeTypescript.transaction(async t => {
+      updateInstanceWithAnother(actor, result.actor)
+
+      if (result.avatar !== undefined) {
+        const avatarInfo = {
+          name: result.avatar.name,
+          fileUrl: result.avatar.fileUrl,
+          onDisk: false
+        }
+
+        await updateActorAvatarInstance(actor, avatarInfo, t)
+      }
+
+      // Force update
+      actor.setDataValue('updatedAt', new Date())
+      await actor.save({ transaction: t })
+
+      if (actor.Account) {
+        actor.Account.name = result.name
+        actor.Account.description = result.summary
+
+        await actor.Account.save({ transaction: t })
+      } else if (actor.VideoChannel) {
+        actor.VideoChannel.name = result.name
+        actor.VideoChannel.description = result.summary
+        actor.VideoChannel.support = result.support
+
+        await actor.VideoChannel.save({ transaction: t })
+      }
+
+      return { refreshed: true, actor }
+    })
+  } catch (err) {
+    logger.warn('Cannot refresh actor %s.', actor.url, { err })
+    return { actor, refreshed: false }
+  }
 }
 
 export {
@@ -193,27 +334,28 @@ export {
   buildActorInstance,
   setAsyncActorKeys,
   fetchActorTotalItems,
-  fetchAvatarIfExists,
+  getAvatarInfoIfExists,
   updateActorInstance,
+  refreshActorIfNeeded,
   updateActorAvatarInstance,
-  normalizeActor
+  addFetchOutboxJob
 }
 
 // ---------------------------------------------------------------------------
 
 function saveActorAndServerAndModelIfNotExist (
   result: FetchRemoteActorResult,
-  ownerActor?: ActorModel,
+  ownerActor?: MActorFullActor,
   t?: Transaction
-): Bluebird<ActorModel> | Promise<ActorModel> {
-  let actor = result.actor
+): Bluebird<MActorFullActor> | Promise<MActorFullActor> {
+  const actor = result.actor
 
   if (t !== undefined) return save(t)
 
   return sequelizeTypescript.transaction(t => save(t))
 
   async function save (t: Transaction) {
-    const actorHost = url.parse(actor.url).host
+    const actorHost = new URL(actor.url).host
 
     const serverOptions = {
       where: {
@@ -227,19 +369,22 @@ function saveActorAndServerAndModelIfNotExist (
     const [ server ] = await ServerModel.findOrCreate(serverOptions)
 
     // Save our new account in database
-    actor.set('serverId', server.id)
+    actor.serverId = server.id
 
     // Avatar?
-    if (result.avatarName) {
+    if (result.avatar) {
       const avatar = await AvatarModel.create({
-        filename: result.avatarName
+        filename: result.avatar.name,
+        fileUrl: result.avatar.fileUrl,
+        onDisk: false
       }, { transaction: t })
-      actor.set('avatarId', avatar.id)
+
+      actor.avatarId = avatar.id
     }
 
     // Force the actor creation, sometimes Sequelize skips the save() when it thinks the instance already exists
     // (which could be false in a retried query)
-    const [ actorCreated ] = await ActorModel.findOrCreate({
+    const [ actorCreated ] = await ActorModel.findOrCreate<MActorFullActor>({
       defaults: actor.toJSON(),
       where: {
         url: actor.url
@@ -248,26 +393,32 @@ function saveActorAndServerAndModelIfNotExist (
     })
 
     if (actorCreated.type === 'Person' || actorCreated.type === 'Application') {
-      actorCreated.Account = await saveAccount(actorCreated, result, t)
+      actorCreated.Account = await saveAccount(actorCreated, result, t) as MAccountDefault
       actorCreated.Account.Actor = actorCreated
     } else if (actorCreated.type === 'Group') { // Video channel
-      actorCreated.VideoChannel = await saveVideoChannel(actorCreated, result, ownerActor, t)
-      actorCreated.VideoChannel.Actor = actorCreated
+      const channel = await saveVideoChannel(actorCreated, result, ownerActor, t)
+      actorCreated.VideoChannel = Object.assign(channel, { Actor: actorCreated, Account: ownerActor.Account })
     }
+
+    actorCreated.Server = server
 
     return actorCreated
   }
 }
 
 type FetchRemoteActorResult = {
-  actor: ActorModel
+  actor: MActor
   name: string
   summary: string
   support?: string
-  avatarName?: string
+  playlists?: string
+  avatar?: {
+    name: string
+    fileUrl: string
+  }
   attributedTo: ActivityPubAttributedTo[]
 }
-async function fetchRemoteActor (actorUrl: string): Promise<FetchRemoteActorResult> {
+async function fetchRemoteActor (actorUrl: string): Promise<{ statusCode?: number, result: FetchRemoteActorResult }> {
   const options = {
     uri: actorUrl,
     method: 'GET',
@@ -277,14 +428,17 @@ async function fetchRemoteActor (actorUrl: string): Promise<FetchRemoteActorResu
 
   logger.info('Fetching remote actor %s.', actorUrl)
 
-  const requestResult = await doRequest(options)
-  normalizeActor(requestResult.body)
+  const requestResult = await doRequest<ActivityPubActor>(options)
+  const actorJSON = requestResult.body
 
-  const actorJSON: ActivityPubActor = requestResult.body
+  if (sanitizeAndCheckActorObject(actorJSON) === false) {
+    logger.debug('Remote actor JSON is not valid.', { actorJSON })
+    return { result: undefined, statusCode: requestResult.response.statusCode }
+  }
 
-  if (isActorObjectValid(actorJSON) === false) {
-    logger.debug('Remote actor JSON is not valid.', { actorJSON: actorJSON })
-    return undefined
+  if (checkUrlsSameHost(actorJSON.id, actorUrl) !== true) {
+    logger.warn('Actor url %s has not the same host than its AP id %s', actorUrl, actorJSON.id)
+    return { result: undefined, statusCode: requestResult.response.statusCode }
   }
 
   const followersCount = await fetchActorTotalItems(actorJSON.followers)
@@ -292,7 +446,6 @@ async function fetchRemoteActor (actorUrl: string): Promise<FetchRemoteActorResu
 
   const actor = new ActorModel({
     type: actorJSON.type,
-    uuid: actorJSON.uuid,
     preferredUsername: actorJSON.preferredUsername,
     url: actorJSON.id,
     publicKey: actorJSON.publicKey.publicKeyPem,
@@ -301,25 +454,32 @@ async function fetchRemoteActor (actorUrl: string): Promise<FetchRemoteActorResu
     followingCount: followingCount,
     inboxUrl: actorJSON.inbox,
     outboxUrl: actorJSON.outbox,
-    sharedInboxUrl: actorJSON.endpoints.sharedInbox,
     followersUrl: actorJSON.followers,
-    followingUrl: actorJSON.following
+    followingUrl: actorJSON.following,
+
+    sharedInboxUrl: actorJSON.endpoints?.sharedInbox
+      ? actorJSON.endpoints.sharedInbox
+      : null
   })
 
-  const avatarName = await fetchAvatarIfExists(actorJSON)
+  const avatarInfo = await getAvatarInfoIfExists(actorJSON)
 
   const name = actorJSON.name || actorJSON.preferredUsername
   return {
-    actor,
-    name,
-    avatarName,
-    summary: actorJSON.summary,
-    support: actorJSON.support,
-    attributedTo: actorJSON.attributedTo
+    statusCode: requestResult.response.statusCode,
+    result: {
+      actor,
+      name,
+      avatar: avatarInfo,
+      summary: actorJSON.summary,
+      support: actorJSON.support,
+      playlists: actorJSON.playlists,
+      attributedTo: actorJSON.attributedTo
+    }
   }
 }
 
-async function saveAccount (actor: ActorModel, result: FetchRemoteActorResult, t: Transaction) {
+async function saveAccount (actor: MActorId, result: FetchRemoteActorResult, t: Transaction) {
   const [ accountCreated ] = await AccountModel.findOrCreate({
     defaults: {
       name: result.name,
@@ -332,10 +492,10 @@ async function saveAccount (actor: ActorModel, result: FetchRemoteActorResult, t
     transaction: t
   })
 
-  return accountCreated
+  return accountCreated as MAccount
 }
 
-async function saveVideoChannel (actor: ActorModel, result: FetchRemoteActorResult, ownerActor: ActorModel, t: Transaction) {
+async function saveVideoChannel (actor: MActorId, result: FetchRemoteActorResult, ownerActor: MActorAccountId, t: Transaction) {
   const [ videoChannelCreated ] = await VideoChannelModel.findOrCreate({
     defaults: {
       name: result.name,
@@ -350,50 +510,5 @@ async function saveVideoChannel (actor: ActorModel, result: FetchRemoteActorResu
     transaction: t
   })
 
-  return videoChannelCreated
-}
-
-async function refreshActorIfNeeded (actor: ActorModel) {
-  if (!actor.isOutdated()) return actor
-
-  try {
-    const actorUrl = await getUrlFromWebfinger(actor.preferredUsername, actor.getHost())
-    const result = await fetchRemoteActor(actorUrl)
-    if (result === undefined) {
-      logger.warn('Cannot fetch remote actor in refresh actor.')
-      return actor
-    }
-
-    return sequelizeTypescript.transaction(async t => {
-      updateInstanceWithAnother(actor, result.actor)
-
-      if (result.avatarName !== undefined) {
-        await updateActorAvatarInstance(actor, result.avatarName, t)
-      }
-
-      // Force update
-      actor.setDataValue('updatedAt', new Date())
-      await actor.save({ transaction: t })
-
-      if (actor.Account) {
-        await actor.save({ transaction: t })
-
-        actor.Account.set('name', result.name)
-        actor.Account.set('description', result.summary)
-        await actor.Account.save({ transaction: t })
-      } else if (actor.VideoChannel) {
-        await actor.save({ transaction: t })
-
-        actor.VideoChannel.set('name', result.name)
-        actor.VideoChannel.set('description', result.summary)
-        actor.VideoChannel.set('support', result.support)
-        await actor.VideoChannel.save({ transaction: t })
-      }
-
-      return actor
-    })
-  } catch (err) {
-    logger.warn('Cannot refresh actor.', { err })
-    return actor
-  }
+  return videoChannelCreated as MChannel
 }

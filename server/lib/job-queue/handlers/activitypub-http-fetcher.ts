@@ -1,59 +1,48 @@
-import * as kue from 'kue'
+import * as Bull from 'bull'
+import * as Bluebird from 'bluebird'
 import { logger } from '../../../helpers/logger'
-import { doRequest } from '../../../helpers/requests'
-import { ACTIVITY_PUB } from '../../../initializers'
 import { processActivities } from '../../activitypub/process'
-import { ActivitypubHttpBroadcastPayload } from './activitypub-http-broadcast'
+import { addVideoComments } from '../../activitypub/video-comments'
+import { crawlCollectionPage } from '../../activitypub/crawl'
+import { VideoModel } from '../../../models/video/video'
+import { addVideoShares } from '../../activitypub/share'
+import { createRates } from '../../activitypub/video-rates'
+import { createAccountPlaylists } from '../../activitypub/playlist'
+import { AccountModel } from '../../../models/account/account'
+import { AccountVideoRateModel } from '../../../models/account/account-video-rate'
+import { VideoShareModel } from '../../../models/video/video-share'
+import { VideoCommentModel } from '../../../models/video/video-comment'
+import { MAccountDefault, MVideoFullLight } from '../../../types/models'
+import { ActivitypubHttpFetcherPayload, FetchType } from '@shared/models'
 
-export type ActivitypubHttpFetcherPayload = {
-  uris: string[]
-}
-
-async function processActivityPubHttpFetcher (job: kue.Job) {
+async function processActivityPubHttpFetcher (job: Bull.Job) {
   logger.info('Processing ActivityPub fetcher in job %d.', job.id)
 
-  const payload = job.data as ActivitypubHttpBroadcastPayload
+  const payload = job.data as ActivitypubHttpFetcherPayload
 
-  const options = {
-    method: 'GET',
-    uri: '',
-    json: true,
-    activityPub: true
+  let video: MVideoFullLight
+  if (payload.videoId) video = await VideoModel.loadAndPopulateAccountAndServerAndTags(payload.videoId)
+
+  let account: MAccountDefault
+  if (payload.accountId) account = await AccountModel.load(payload.accountId)
+
+  const fetcherType: { [ id in FetchType ]: (items: any[]) => Promise<any> } = {
+    'activity': items => processActivities(items, { outboxUrl: payload.uri, fromFetch: true }),
+    'video-likes': items => createRates(items, video, 'like'),
+    'video-dislikes': items => createRates(items, video, 'dislike'),
+    'video-shares': items => addVideoShares(items, video),
+    'video-comments': items => addVideoComments(items),
+    'account-playlists': items => createAccountPlaylists(items, account)
   }
 
-  for (const uri of payload.uris) {
-    options.uri = uri
-    logger.info('Fetching ActivityPub data on %s.', uri)
-
-    const response = await doRequest(options)
-    const firstBody = response.body
-
-    if (firstBody.first && Array.isArray(firstBody.first.orderedItems)) {
-      const activities = firstBody.first.orderedItems
-
-      logger.info('Processing %i items ActivityPub fetcher for %s.', activities.length, options.uri)
-
-      await processActivities(activities)
-    }
-
-    let limit = ACTIVITY_PUB.FETCH_PAGE_LIMIT
-    let i = 0
-    let nextLink = firstBody.first.next
-    while (nextLink && i < limit) {
-      options.uri = nextLink
-
-      const { body } = await doRequest(options)
-      nextLink = body.next
-      i++
-
-      if (Array.isArray(body.orderedItems)) {
-        const activities = body.orderedItems
-        logger.info('Processing %i items ActivityPub fetcher for %s.', activities.length, options.uri)
-
-        await processActivities(activities)
-      }
-    }
+  const cleanerType: { [ id in FetchType ]?: (crawlStartDate: Date) => Bluebird<any> } = {
+    'video-likes': crawlStartDate => AccountVideoRateModel.cleanOldRatesOf(video.id, 'like' as 'like', crawlStartDate),
+    'video-dislikes': crawlStartDate => AccountVideoRateModel.cleanOldRatesOf(video.id, 'dislike' as 'dislike', crawlStartDate),
+    'video-shares': crawlStartDate => VideoShareModel.cleanOldSharesOf(video.id, crawlStartDate),
+    'video-comments': crawlStartDate => VideoCommentModel.cleanOldCommentsOf(video.id, crawlStartDate)
   }
+
+  return crawlCollectionPage(payload.uri, fetcherType[payload.type], cleanerType[payload.type])
 }
 
 // ---------------------------------------------------------------------------

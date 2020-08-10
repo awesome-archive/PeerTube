@@ -1,20 +1,33 @@
 import * as express from 'express'
 import { ResultList } from '../../../../shared/models'
 import { VideoCommentCreate } from '../../../../shared/models/videos/video-comment.model'
-import { retryTransactionWrapper } from '../../../helpers/database-utils'
-import { logger } from '../../../helpers/logger'
+import { auditLoggerFactory, CommentAuditView, getAuditIdFromRes } from '../../../helpers/audit-logger'
 import { getFormattedObjects } from '../../../helpers/utils'
-import { sequelizeTypescript } from '../../../initializers'
-import { buildFormattedCommentTree, createVideoComment } from '../../../lib/video-comment'
-import { asyncMiddleware, authenticate, paginationValidator, setDefaultSort, setDefaultPagination } from '../../../middlewares'
-import { videoCommentThreadsSortValidator } from '../../../middlewares/validators'
+import { sequelizeTypescript } from '../../../initializers/database'
+import { Notifier } from '../../../lib/notifier'
+import { Hooks } from '../../../lib/plugins/hooks'
+import { buildFormattedCommentTree, createVideoComment, removeComment } from '../../../lib/video-comment'
 import {
-  addVideoCommentReplyValidator, addVideoCommentThreadValidator, listVideoCommentThreadsValidator, listVideoThreadCommentsValidator,
-  removeVideoCommentValidator
-} from '../../../middlewares/validators/video-comments'
-import { VideoModel } from '../../../models/video/video'
+  asyncMiddleware,
+  asyncRetryTransactionMiddleware,
+  authenticate,
+  optionalAuthenticate,
+  paginationValidator,
+  setDefaultPagination,
+  setDefaultSort
+} from '../../../middlewares'
+import {
+  addVideoCommentReplyValidator,
+  addVideoCommentThreadValidator,
+  listVideoCommentThreadsValidator,
+  listVideoThreadCommentsValidator,
+  removeVideoCommentValidator,
+  videoCommentThreadsSortValidator
+} from '../../../middlewares/validators'
+import { AccountModel } from '../../../models/account/account'
 import { VideoCommentModel } from '../../../models/video/video-comment'
 
+const auditLogger = auditLoggerFactory('comments')
 const videoCommentRouter = express.Router()
 
 videoCommentRouter.get('/:videoId/comment-threads',
@@ -23,27 +36,29 @@ videoCommentRouter.get('/:videoId/comment-threads',
   setDefaultSort,
   setDefaultPagination,
   asyncMiddleware(listVideoCommentThreadsValidator),
+  optionalAuthenticate,
   asyncMiddleware(listVideoThreads)
 )
 videoCommentRouter.get('/:videoId/comment-threads/:threadId',
   asyncMiddleware(listVideoThreadCommentsValidator),
+  optionalAuthenticate,
   asyncMiddleware(listVideoThreadComments)
 )
 
 videoCommentRouter.post('/:videoId/comment-threads',
   authenticate,
   asyncMiddleware(addVideoCommentThreadValidator),
-  asyncMiddleware(addVideoCommentThreadRetryWrapper)
+  asyncRetryTransactionMiddleware(addVideoCommentThread)
 )
 videoCommentRouter.post('/:videoId/comments/:commentId',
   authenticate,
   asyncMiddleware(addVideoCommentReplyValidator),
-  asyncMiddleware(addVideoCommentReplyRetryWrapper)
+  asyncRetryTransactionMiddleware(addVideoCommentReply)
 )
 videoCommentRouter.delete('/:videoId/comments/:commentId',
   authenticate,
   asyncMiddleware(removeVideoCommentValidator),
-  asyncMiddleware(removeVideoCommentRetryWrapper)
+  asyncRetryTransactionMiddleware(removeVideoComment)
 )
 
 // ---------------------------------------------------------------------------
@@ -54,12 +69,27 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function listVideoThreads (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const video = res.locals.video as VideoModel
+async function listVideoThreads (req: express.Request, res: express.Response) {
+  const video = res.locals.onlyVideo
+  const user = res.locals.oauth ? res.locals.oauth.token.User : undefined
+
   let resultList: ResultList<VideoCommentModel>
 
   if (video.commentsEnabled === true) {
-    resultList = await VideoCommentModel.listThreadsForApi(video.id, req.query.start, req.query.count, req.query.sort)
+    const apiOptions = await Hooks.wrapObject({
+      videoId: video.id,
+      isVideoOwned: video.isOwned(),
+      start: req.query.start,
+      count: req.query.count,
+      sort: req.query.sort,
+      user
+    }, 'filter:api.video-threads.list.params')
+
+    resultList = await Hooks.wrapPromiseFun(
+      VideoCommentModel.listThreadsForApi,
+      apiOptions,
+      'filter:api.video-threads.list.result'
+    )
   } else {
     resultList = {
       total: 0,
@@ -70,12 +100,25 @@ async function listVideoThreads (req: express.Request, res: express.Response, ne
   return res.json(getFormattedObjects(resultList.data, resultList.total))
 }
 
-async function listVideoThreadComments (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const video = res.locals.video as VideoModel
+async function listVideoThreadComments (req: express.Request, res: express.Response) {
+  const video = res.locals.onlyVideo
+  const user = res.locals.oauth ? res.locals.oauth.token.User : undefined
+
   let resultList: ResultList<VideoCommentModel>
 
   if (video.commentsEnabled === true) {
-    resultList = await VideoCommentModel.listThreadCommentsForApi(res.locals.video.id, res.locals.videoCommentThread.id)
+    const apiOptions = await Hooks.wrapObject({
+      videoId: video.id,
+      isVideoOwned: video.isOwned(),
+      threadId: res.locals.videoCommentThread.id,
+      user
+    }, 'filter:api.video-thread-comments.list.params')
+
+    resultList = await Hooks.wrapPromiseFun(
+      VideoCommentModel.listThreadCommentsForApi,
+      apiOptions,
+      'filter:api.video-thread-comments.list.result'
+    )
   } else {
     resultList = {
       total: 0,
@@ -86,75 +129,56 @@ async function listVideoThreadComments (req: express.Request, res: express.Respo
   return res.json(buildFormattedCommentTree(resultList))
 }
 
-async function addVideoCommentThreadRetryWrapper (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const options = {
-    arguments: [ req, res ],
-    errorMessage: 'Cannot insert the video comment thread with many retries.'
-  }
-
-  const comment = await retryTransactionWrapper(addVideoCommentThread, options)
-
-  res.json({
-    comment: comment.toFormattedJSON()
-  }).end()
-}
-
-function addVideoCommentThread (req: express.Request, res: express.Response) {
+async function addVideoCommentThread (req: express.Request, res: express.Response) {
   const videoCommentInfo: VideoCommentCreate = req.body
 
-  return sequelizeTypescript.transaction(async t => {
+  const comment = await sequelizeTypescript.transaction(async t => {
+    const account = await AccountModel.load(res.locals.oauth.token.User.Account.id, t)
+
     return createVideoComment({
       text: videoCommentInfo.text,
       inReplyToComment: null,
-      video: res.locals.video,
-      account: res.locals.oauth.token.User.Account
+      video: res.locals.videoAll,
+      account
     }, t)
   })
+
+  Notifier.Instance.notifyOnNewComment(comment)
+  auditLogger.create(getAuditIdFromRes(res), new CommentAuditView(comment.toFormattedJSON()))
+
+  Hooks.runAction('action:api.video-thread.created', { comment })
+
+  return res.json({ comment: comment.toFormattedJSON() })
 }
 
-async function addVideoCommentReplyRetryWrapper (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const options = {
-    arguments: [ req, res ],
-    errorMessage: 'Cannot insert the video comment reply with many retries.'
-  }
-
-  const comment = await retryTransactionWrapper(addVideoCommentReply, options)
-
-  res.json({
-    comment: comment.toFormattedJSON()
-  }).end()
-}
-
-function addVideoCommentReply (req: express.Request, res: express.Response, next: express.NextFunction) {
+async function addVideoCommentReply (req: express.Request, res: express.Response) {
   const videoCommentInfo: VideoCommentCreate = req.body
 
-  return sequelizeTypescript.transaction(async t => {
+  const comment = await sequelizeTypescript.transaction(async t => {
+    const account = await AccountModel.load(res.locals.oauth.token.User.Account.id, t)
+
     return createVideoComment({
       text: videoCommentInfo.text,
-      inReplyToComment: res.locals.videoComment,
-      video: res.locals.video,
-      account: res.locals.oauth.token.User.Account
+      inReplyToComment: res.locals.videoCommentFull,
+      video: res.locals.videoAll,
+      account
     }, t)
   })
-}
 
-async function removeVideoCommentRetryWrapper (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const options = {
-    arguments: [ req, res ],
-    errorMessage: 'Cannot remove the video comment with many retries.'
-  }
+  Notifier.Instance.notifyOnNewComment(comment)
+  auditLogger.create(getAuditIdFromRes(res), new CommentAuditView(comment.toFormattedJSON()))
 
-  await retryTransactionWrapper(removeVideoComment, options)
+  Hooks.runAction('action:api.video-comment-reply.created', { comment })
 
-  return res.type('json').status(204).end()
+  return res.json({ comment: comment.toFormattedJSON() })
 }
 
 async function removeVideoComment (req: express.Request, res: express.Response) {
-  const videoCommentInstance: VideoCommentModel = res.locals.videoComment
+  const videoCommentInstance = res.locals.videoCommentFull
 
-  await sequelizeTypescript.transaction(async t => {
-    await videoCommentInstance.destroy({ transaction: t })
-  })
+  await removeComment(videoCommentInstance)
 
-  logger.info('Video comment %d deleted.', videoCommentInstance.id)
+  auditLogger.delete(getAuditIdFromRes(res), new CommentAuditView(videoCommentInstance.toFormattedJSON()))
+
+  return res.type('json').status(204).end()
 }

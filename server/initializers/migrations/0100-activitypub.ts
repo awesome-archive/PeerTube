@@ -7,9 +7,9 @@ import { ApplicationModel } from '../../models/application/application'
 import { SERVER_ACTOR_NAME } from '../constants'
 
 async function up (utils: {
-  transaction: Sequelize.Transaction,
-  queryInterface: Sequelize.QueryInterface,
-  sequelize: Sequelize.Sequelize,
+  transaction: Sequelize.Transaction
+  queryInterface: Sequelize.QueryInterface
+  sequelize: Sequelize.Sequelize
   db: any
 }): Promise<void> {
   const q = utils.queryInterface
@@ -21,7 +21,7 @@ async function up (utils: {
     const options = {
       type: Sequelize.QueryTypes.SELECT
     }
-    const res = await utils.sequelize.query(query, options)
+    const res = await utils.sequelize.query(query, options) as any
 
     if (!res[0] || res[0].total !== 0) {
       throw new Error('You need to quit friends.')
@@ -65,11 +65,16 @@ async function up (utils: {
   // Create application account
   {
     const applicationInstance = await ApplicationModel.findOne()
-    const accountCreated = await createLocalAccountWithoutKeys(SERVER_ACTOR_NAME, null, applicationInstance.id, undefined)
+    const accountCreated = await createLocalAccountWithoutKeys({
+      name: SERVER_ACTOR_NAME,
+      userId: null,
+      applicationId: applicationInstance.id,
+      t: undefined
+    })
 
     const { publicKey, privateKey } = await createPrivateAndPublicKeys()
-    accountCreated.set('publicKey', publicKey)
-    accountCreated.set('privateKey', privateKey)
+    accountCreated.Actor.publicKey = publicKey
+    accountCreated.Actor.privateKey = privateKey
 
     await accountCreated.save()
   }
@@ -83,11 +88,11 @@ async function up (utils: {
   // Recreate accounts for each user
   const users = await db.User.findAll()
   for (const user of users) {
-    const account = await createLocalAccountWithoutKeys(user.username, user.id, null, undefined)
+    const account = await createLocalAccountWithoutKeys({ name: user.username, userId: user.id, applicationId: null, t: undefined })
 
     const { publicKey, privateKey } = await createPrivateAndPublicKeys()
-    account.set('publicKey', publicKey)
-    account.set('privateKey', privateKey)
+    account.Actor.publicKey = publicKey
+    account.Actor.privateKey = privateKey
     await account.save()
   }
 

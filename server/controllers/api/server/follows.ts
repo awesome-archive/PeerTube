@@ -1,23 +1,37 @@
 import * as express from 'express'
 import { UserRight } from '../../../../shared/models/users'
-import { sanitizeHost } from '../../../helpers/core-utils'
-import { retryTransactionWrapper } from '../../../helpers/database-utils'
 import { logger } from '../../../helpers/logger'
-import { getFormattedObjects, getServerActor } from '../../../helpers/utils'
-import { loadActorUrlOrGetFromWebfinger } from '../../../helpers/webfinger'
-import { REMOTE_SCHEME, sequelizeTypescript, SERVER_ACTOR_NAME } from '../../../initializers'
-import { getOrCreateActorAndServerAndModel } from '../../../lib/activitypub/actor'
-import { sendFollow, sendUndoFollow } from '../../../lib/activitypub/send'
+import { getFormattedObjects } from '../../../helpers/utils'
+import { SERVER_ACTOR_NAME } from '../../../initializers/constants'
+import { sendAccept, sendReject, sendUndoFollow } from '../../../lib/activitypub/send'
 import {
-  asyncMiddleware, authenticate, ensureUserHasRight, paginationValidator, removeFollowingValidator, setBodyHostsPort, setDefaultSort,
-  setDefaultPagination
+  asyncMiddleware,
+  authenticate,
+  ensureUserHasRight,
+  paginationValidator,
+  setBodyHostsPort,
+  setDefaultPagination,
+  setDefaultSort
 } from '../../../middlewares'
-import { followersSortValidator, followingSortValidator, followValidator } from '../../../middlewares/validators'
-import { ActorModel } from '../../../models/activitypub/actor'
+import {
+  acceptOrRejectFollowerValidator,
+  followersSortValidator,
+  followingSortValidator,
+  followValidator,
+  getFollowerValidator,
+  removeFollowingValidator,
+  listFollowsValidator
+} from '../../../middlewares/validators'
 import { ActorFollowModel } from '../../../models/activitypub/actor-follow'
+import { JobQueue } from '../../../lib/job-queue'
+import { removeRedundanciesOfServer } from '../../../lib/redundancy'
+import { sequelizeTypescript } from '../../../initializers/database'
+import { autoFollowBackIfNeeded } from '../../../lib/activitypub/follow'
+import { getServerActor } from '@server/models/application/application'
 
 const serverFollowsRouter = express.Router()
 serverFollowsRouter.get('/following',
+  listFollowsValidator,
   paginationValidator,
   followingSortValidator,
   setDefaultSort,
@@ -30,22 +44,46 @@ serverFollowsRouter.post('/following',
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   followValidator,
   setBodyHostsPort,
-  asyncMiddleware(followRetry)
+  asyncMiddleware(followInstance)
 )
 
 serverFollowsRouter.delete('/following/:host',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(removeFollowingValidator),
-  asyncMiddleware(removeFollow)
+  asyncMiddleware(removeFollowing)
 )
 
 serverFollowsRouter.get('/followers',
+  listFollowsValidator,
   paginationValidator,
   followersSortValidator,
   setDefaultSort,
   setDefaultPagination,
   asyncMiddleware(listFollowers)
+)
+
+serverFollowsRouter.delete('/followers/:nameWithHost',
+  authenticate,
+  ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
+  asyncMiddleware(getFollowerValidator),
+  asyncMiddleware(removeOrRejectFollower)
+)
+
+serverFollowsRouter.post('/followers/:nameWithHost/reject',
+  authenticate,
+  ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
+  asyncMiddleware(getFollowerValidator),
+  acceptOrRejectFollowerValidator,
+  asyncMiddleware(removeOrRejectFollower)
+)
+
+serverFollowsRouter.post('/followers/:nameWithHost/accept',
+  authenticate,
+  ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
+  asyncMiddleware(getFollowerValidator),
+  acceptOrRejectFollowerValidator,
+  asyncMiddleware(acceptFollower)
 )
 
 // ---------------------------------------------------------------------------
@@ -56,95 +94,93 @@ export {
 
 // ---------------------------------------------------------------------------
 
-async function listFollowing (req: express.Request, res: express.Response, next: express.NextFunction) {
+async function listFollowing (req: express.Request, res: express.Response) {
   const serverActor = await getServerActor()
-  const resultList = await ActorFollowModel.listFollowingForApi(serverActor.id, req.query.start, req.query.count, req.query.sort)
+  const resultList = await ActorFollowModel.listFollowingForApi({
+    id: serverActor.id,
+    start: req.query.start,
+    count: req.query.count,
+    sort: req.query.sort,
+    search: req.query.search,
+    actorType: req.query.actorType,
+    state: req.query.state
+  })
 
   return res.json(getFormattedObjects(resultList.data, resultList.total))
 }
 
-async function listFollowers (req: express.Request, res: express.Response, next: express.NextFunction) {
+async function listFollowers (req: express.Request, res: express.Response) {
   const serverActor = await getServerActor()
-  const resultList = await ActorFollowModel.listFollowersForApi(serverActor.id, req.query.start, req.query.count, req.query.sort)
+  const resultList = await ActorFollowModel.listFollowersForApi({
+    actorId: serverActor.id,
+    start: req.query.start,
+    count: req.query.count,
+    sort: req.query.sort,
+    search: req.query.search,
+    actorType: req.query.actorType,
+    state: req.query.state
+  })
 
   return res.json(getFormattedObjects(resultList.data, resultList.total))
 }
 
-async function followRetry (req: express.Request, res: express.Response, next: express.NextFunction) {
+async function followInstance (req: express.Request, res: express.Response) {
   const hosts = req.body.hosts as string[]
-  const fromActor = await getServerActor()
-
-  const tasks: Promise<any>[] = []
-  const actorName = SERVER_ACTOR_NAME
+  const follower = await getServerActor()
 
   for (const host of hosts) {
-    const sanitizedHost = sanitizeHost(host, REMOTE_SCHEME.HTTP)
+    const payload = {
+      host,
+      name: SERVER_ACTOR_NAME,
+      followerActorId: follower.id
+    }
 
-    // We process each host in a specific transaction
-    // First, we add the follow request in the database
-    // Then we send the follow request to other actor
-    const p = loadActorUrlOrGetFromWebfinger(actorName, sanitizedHost)
-      .then(actorUrl => getOrCreateActorAndServerAndModel(actorUrl))
-      .then(targetActor => {
-        const options = {
-          arguments: [ fromActor, targetActor ],
-          errorMessage: 'Cannot follow with many retries.'
-        }
-
-        return retryTransactionWrapper(follow, options)
-      })
-      .catch(err => logger.warn('Cannot follow server %s.', sanitizedHost, { err }))
-
-    tasks.push(p)
+    JobQueue.Instance.createJob({ type: 'activitypub-follow', payload })
   }
-
-  // Don't make the client wait the tasks
-  Promise.all(tasks)
-    .catch(err => logger.error('Error in follow.', { err }))
 
   return res.status(204).end()
 }
 
-function follow (fromActor: ActorModel, targetActor: ActorModel) {
-  if (fromActor.id === targetActor.id) {
-    throw new Error('Follower is the same than target actor.')
-  }
-
-  return sequelizeTypescript.transaction(async t => {
-    const [ actorFollow ] = await ActorFollowModel.findOrCreate({
-      where: {
-        actorId: fromActor.id,
-        targetActorId: targetActor.id
-      },
-      defaults: {
-        state: 'pending',
-        actorId: fromActor.id,
-        targetActorId: targetActor.id
-      },
-      transaction: t
-    })
-    actorFollow.ActorFollowing = targetActor
-    actorFollow.ActorFollower = fromActor
-
-    // Send a notification to remote server
-    await sendFollow(actorFollow)
-  })
-}
-
-async function removeFollow (req: express.Request, res: express.Response, next: express.NextFunction) {
-  const follow: ActorFollowModel = res.locals.follow
+async function removeFollowing (req: express.Request, res: express.Response) {
+  const follow = res.locals.follow
 
   await sequelizeTypescript.transaction(async t => {
     if (follow.state === 'accepted') await sendUndoFollow(follow, t)
 
+    // Disable redundancy on unfollowed instances
+    const server = follow.ActorFollowing.Server
+    server.redundancyAllowed = false
+    await server.save({ transaction: t })
+
+    // Async, could be long
+    removeRedundanciesOfServer(server.id)
+      .catch(err => logger.error('Cannot remove redundancy of %s.', server.host, err))
+
     await follow.destroy({ transaction: t })
   })
 
-  // Destroy the actor that will destroy video channels, videos and video files too
-  // This could be long so don't wait this task
-  const following = follow.ActorFollowing
-  following.destroy()
-    .catch(err => logger.error('Cannot destroy actor that we do not follow anymore %s.', following.url, { err }))
+  return res.status(204).end()
+}
+
+async function removeOrRejectFollower (req: express.Request, res: express.Response) {
+  const follow = res.locals.follow
+
+  await sendReject(follow.ActorFollower, follow.ActorFollowing)
+
+  await follow.destroy()
+
+  return res.status(204).end()
+}
+
+async function acceptFollower (req: express.Request, res: express.Response) {
+  const follow = res.locals.follow
+
+  await sendAccept(follow)
+
+  follow.state = 'accepted'
+  await follow.save()
+
+  await autoFollowBackIfNeeded(follow)
 
   return res.status(204).end()
 }

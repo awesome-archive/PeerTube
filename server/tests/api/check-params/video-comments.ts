@@ -1,14 +1,25 @@
-/* tslint:disable:no-unused-expression */
+/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import * as chai from 'chai'
 import 'mocha'
 import {
+  cleanupTests,
   createUser,
-  flushTests, killallServers, makeDeleteRequest, makeGetRequest, makePostBodyRequest, runServer, ServerInfo, setAccessTokensToServers,
-  uploadVideo, userLogin
-} from '../../utils'
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '../../utils/requests/check-api-params'
-import { addVideoCommentThread } from '../../utils/videos/video-comments'
+  flushAndRunServer,
+  makeDeleteRequest,
+  makeGetRequest,
+  makePostBodyRequest,
+  ServerInfo,
+  setAccessTokensToServers,
+  uploadVideo,
+  userLogin
+} from '../../../../shared/extra-utils'
+import {
+  checkBadCountPagination,
+  checkBadSortPagination,
+  checkBadStartPagination
+} from '../../../../shared/extra-utils/requests/check-api-params'
+import { addVideoCommentThread } from '../../../../shared/extra-utils/videos/video-comments'
 
 const expect = chai.expect
 
@@ -18,6 +29,7 @@ describe('Test video comments API validator', function () {
   let server: ServerInfo
   let videoUUID: string
   let userAccessToken: string
+  let userAccessToken2: string
   let commentId: number
 
   // ---------------------------------------------------------------
@@ -25,9 +37,7 @@ describe('Test video comments API validator', function () {
   before(async function () {
     this.timeout(30000)
 
-    await flushTests()
-
-    server = await runServer(1)
+    server = await flushAndRunServer(1)
 
     await setAccessTokensToServers([ server ])
 
@@ -44,12 +54,15 @@ describe('Test video comments API validator', function () {
     }
 
     {
-      const user = {
-        username: 'user1',
-        password: 'my super password'
-      }
-      await createUser(server.url, server.accessToken, user.username, user.password)
+      const user = { username: 'user1', password: 'my super password' }
+      await createUser({ url: server.url, accessToken: server.accessToken, username: user.username, password: user.password })
       userAccessToken = await userLogin(server, user)
+    }
+
+    {
+      const user = { username: 'user2', password: 'my super password' }
+      await createUser({ url: server.url, accessToken: server.accessToken, username: user.username, password: user.password })
+      userAccessToken2 = await userLogin(server, user)
     }
   })
 
@@ -124,7 +137,7 @@ describe('Test video comments API validator', function () {
 
     it('Should fail with a long comment', async function () {
       const fields = {
-        text: 'h'.repeat(3001)
+        text: 'h'.repeat(10001)
       }
       await makePostBodyRequest({ url: server.url, path: pathThread, token: server.accessToken, fields })
     })
@@ -167,7 +180,7 @@ describe('Test video comments API validator', function () {
 
     it('Should fail with a long comment', async function () {
       const fields = {
-        text: 'h'.repeat(3001)
+        text: 'h'.repeat(10001)
       }
       await makePostBodyRequest({ url: server.url, path: pathComment, token: server.accessToken, fields })
     })
@@ -215,6 +228,40 @@ describe('Test video comments API validator', function () {
       await makeDeleteRequest({ url: server.url, path, token: server.accessToken, statusCodeExpected: 404 })
     })
 
+    it('Should succeed with the same user', async function () {
+      let commentToDelete: number
+
+      {
+        const res = await addVideoCommentThread(server.url, userAccessToken, videoUUID, 'hello')
+        commentToDelete = res.body.comment.id
+      }
+
+      const path = '/api/v1/videos/' + videoUUID + '/comments/' + commentToDelete
+
+      await makeDeleteRequest({ url: server.url, path, token: userAccessToken2, statusCodeExpected: 403 })
+      await makeDeleteRequest({ url: server.url, path, token: userAccessToken, statusCodeExpected: 204 })
+    })
+
+    it('Should succeed with the owner of the video', async function () {
+      let commentToDelete: number
+      let anotherVideoUUID: string
+
+      {
+        const res = await uploadVideo(server.url, userAccessToken, { name: 'video' })
+        anotherVideoUUID = res.body.video.uuid
+      }
+
+      {
+        const res = await addVideoCommentThread(server.url, server.accessToken, anotherVideoUUID, 'hello')
+        commentToDelete = res.body.comment.id
+      }
+
+      const path = '/api/v1/videos/' + anotherVideoUUID + '/comments/' + commentToDelete
+
+      await makeDeleteRequest({ url: server.url, path, token: userAccessToken2, statusCodeExpected: 403 })
+      await makeDeleteRequest({ url: server.url, path, token: userAccessToken, statusCodeExpected: 204 })
+    })
+
     it('Should succeed with the correct parameters', async function () {
       await makeDeleteRequest({ url: server.url, path: pathComment, token: server.accessToken, statusCodeExpected: 204 })
     })
@@ -250,11 +297,6 @@ describe('Test video comments API validator', function () {
   })
 
   after(async function () {
-    killallServers([ server ])
-
-    // Keep the logs if the test failed
-    if (this['ok']) {
-      await flushTests()
-    }
+    await cleanupTests([ server ])
   })
 })

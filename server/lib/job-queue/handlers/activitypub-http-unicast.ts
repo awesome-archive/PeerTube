@@ -1,16 +1,12 @@
-import * as kue from 'kue'
+import * as Bull from 'bull'
 import { logger } from '../../../helpers/logger'
 import { doRequest } from '../../../helpers/requests'
-import { ActorFollowModel } from '../../../models/activitypub/actor-follow'
-import { buildSignedRequestOptions, computeBody } from './utils/activitypub-http-utils'
+import { buildGlobalHeaders, buildSignedRequestOptions, computeBody } from './utils/activitypub-http-utils'
+import { JOB_REQUEST_TIMEOUT } from '../../../initializers/constants'
+import { ActorFollowScoreCache } from '../../files-cache'
+import { ActivitypubHttpUnicastPayload } from '@shared/models'
 
-export type ActivitypubHttpUnicastPayload = {
-  uri: string
-  signatureActorId?: number
-  body: any
-}
-
-async function processActivityPubHttpUnicast (job: kue.Job) {
+async function processActivityPubHttpUnicast (job: Bull.Job) {
   logger.info('Processing ActivityPub unicast in job %d.', job.id)
 
   const payload = job.data as ActivitypubHttpUnicastPayload
@@ -23,14 +19,16 @@ async function processActivityPubHttpUnicast (job: kue.Job) {
     method: 'POST',
     uri,
     json: body,
-    httpSignature: httpSignatureOptions
+    httpSignature: httpSignatureOptions,
+    timeout: JOB_REQUEST_TIMEOUT,
+    headers: buildGlobalHeaders(body)
   }
 
   try {
     await doRequest(options)
-    ActorFollowModel.updateActorFollowsScore([ uri ], [], undefined)
+    ActorFollowScoreCache.Instance.updateActorFollowsScore([ uri ], [])
   } catch (err) {
-    ActorFollowModel.updateActorFollowsScore([], [ uri ], undefined)
+    ActorFollowScoreCache.Instance.updateActorFollowsScore([], [ uri ])
 
     throw err
   }

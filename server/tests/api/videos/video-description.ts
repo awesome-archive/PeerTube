@@ -1,21 +1,20 @@
-/* tslint:disable:no-unused-expression */
+/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import * as chai from 'chai'
 import 'mocha'
 import {
+  cleanupTests,
   flushAndRunMultipleServers,
-  flushTests,
   getVideo,
   getVideoDescription,
   getVideosList,
-  killallServers,
   ServerInfo,
   setAccessTokensToServers,
   updateVideo,
-  uploadVideo,
-  wait
-} from '../../utils/index'
-import { doubleFollow } from '../../utils/server/follows'
+  uploadVideo
+} from '../../../../shared/extra-utils/index'
+import { doubleFollow } from '../../../../shared/extra-utils/server/follows'
+import { waitJobs } from '../../../../shared/extra-utils/server/jobs'
 
 const expect = chai.expect
 
@@ -23,7 +22,7 @@ describe('Test video description', function () {
   let servers: ServerInfo[] = []
   let videoUUID = ''
   let videoId: number
-  let longDescription = 'my super description for server 1'.repeat(50)
+  const longDescription = 'my super description for server 1'.repeat(50)
 
   before(async function () {
     this.timeout(40000)
@@ -46,7 +45,7 @@ describe('Test video description', function () {
     }
     await uploadVideo(servers[0].url, servers[0].accessToken, attributes)
 
-    await wait(5000)
+    await waitJobs(servers)
 
     const res = await getVideosList(servers[0].url)
 
@@ -61,7 +60,7 @@ describe('Test video description', function () {
 
       // 30 characters * 6 -> 240 characters
       const truncatedDescription = 'my super description for server 1'.repeat(7) +
-                                   'my super descrip...'
+        'my super descrip...'
 
       expect(video.description).to.equal(truncatedDescription)
     }
@@ -85,7 +84,7 @@ describe('Test video description', function () {
     }
     await updateVideo(servers[0].url, servers[0].accessToken, videoId, attributes)
 
-    await wait(5000)
+    await waitJobs(servers)
   })
 
   it('Should have a small description on each server', async function () {
@@ -101,11 +100,6 @@ describe('Test video description', function () {
   })
 
   after(async function () {
-    killallServers(servers)
-
-    // Keep the logs if the test failed
-    if (this['ok']) {
-      await flushTests()
-    }
+    await cleanupTests(servers)
   })
 })

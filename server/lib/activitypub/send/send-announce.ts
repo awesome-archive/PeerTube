@@ -1,49 +1,51 @@
 import { Transaction } from 'sequelize'
 import { ActivityAnnounce, ActivityAudience } from '../../../../shared/models/activitypub'
-import { ActorModel } from '../../../models/activitypub/actor'
-import { VideoModel } from '../../../models/video/video'
-import { VideoShareModel } from '../../../models/video/video-share'
-import { broadcastToFollowers, getActorsInvolvedInVideo, getAudience, getObjectFollowersAudience } from './misc'
+import { broadcastToFollowers } from './utils'
+import { audiencify, getActorsInvolvedInVideo, getAudience, getAudienceFromFollowersOf } from '../audience'
+import { logger } from '../../../helpers/logger'
+import { MActorLight, MVideo } from '../../../types/models'
+import { MVideoShare } from '../../../types/models/video'
 
-async function buildVideoAnnounce (byActor: ActorModel, videoShare: VideoShareModel, video: VideoModel, t: Transaction) {
+async function buildAnnounceWithVideoAudience (
+  byActor: MActorLight,
+  videoShare: MVideoShare,
+  video: MVideo,
+  t: Transaction
+) {
   const announcedObject = video.url
 
-  const accountsToForwardView = await getActorsInvolvedInVideo(video, t)
-  const audience = getObjectFollowersAudience(accountsToForwardView)
-  return announceActivityData(videoShare.url, byActor, announcedObject, t, audience)
+  const actorsInvolvedInVideo = await getActorsInvolvedInVideo(video, t)
+  const audience = getAudienceFromFollowersOf(actorsInvolvedInVideo)
+
+  const activity = buildAnnounceActivity(videoShare.url, byActor, announcedObject, audience)
+
+  return { activity, actorsInvolvedInVideo }
 }
 
-async function sendVideoAnnounce (byActor: ActorModel, videoShare: VideoShareModel, video: VideoModel, t: Transaction) {
-  const data = await buildVideoAnnounce(byActor, videoShare, video, t)
+async function sendVideoAnnounce (byActor: MActorLight, videoShare: MVideoShare, video: MVideo, t: Transaction) {
+  const { activity, actorsInvolvedInVideo } = await buildAnnounceWithVideoAudience(byActor, videoShare, video, t)
 
-  return broadcastToFollowers(data, byActor, [ byActor ], t)
+  logger.info('Creating job to send announce %s.', videoShare.url)
+
+  const followersException = [ byActor ]
+  return broadcastToFollowers(activity, byActor, actorsInvolvedInVideo, t, followersException, 'Announce')
 }
 
-async function announceActivityData (
-  url: string,
-  byActor: ActorModel,
-  object: string,
-  t: Transaction,
-  audience?: ActivityAudience
-): Promise<ActivityAnnounce> {
-  if (!audience) {
-    audience = await getAudience(byActor, t)
-  }
+function buildAnnounceActivity (url: string, byActor: MActorLight, object: string, audience?: ActivityAudience): ActivityAnnounce {
+  if (!audience) audience = getAudience(byActor)
 
-  return {
-    type: 'Announce',
-    to: audience.to,
-    cc: audience.cc,
+  return audiencify({
+    type: 'Announce' as 'Announce',
     id: url,
     actor: byActor.url,
     object
-  }
+  }, audience)
 }
 
 // ---------------------------------------------------------------------------
 
 export {
   sendVideoAnnounce,
-  announceActivityData,
-  buildVideoAnnounce
+  buildAnnounceActivity,
+  buildAnnounceWithVideoAudience
 }

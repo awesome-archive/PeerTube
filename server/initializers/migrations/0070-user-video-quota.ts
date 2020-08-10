@@ -1,10 +1,11 @@
 import * as Sequelize from 'sequelize'
 import * as Promise from 'bluebird'
+import { Migration } from '../../models/migrations'
 
 function up (utils: {
-  transaction: Sequelize.Transaction,
-  queryInterface: Sequelize.QueryInterface,
-  sequelize: Sequelize.Sequelize,
+  transaction: Sequelize.Transaction
+  queryInterface: Sequelize.QueryInterface
+  sequelize: Sequelize.Sequelize
   db: any
 }): Promise<void> {
   const q = utils.queryInterface
@@ -13,7 +14,7 @@ function up (utils: {
     type: Sequelize.BIGINT,
     allowNull: false,
     defaultValue: -1
-  }
+  } as Migration.BigInteger
 
   return q.addColumn('Users', 'videoQuota', data)
     .then(() => {

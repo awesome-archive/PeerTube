@@ -10,13 +10,19 @@ database:
 
 # From the project root directory
 storage:
+  tmp: 'test4/tmp/'
   avatars: 'test4/avatars/'
   videos: 'test4/videos/'
+  streaming_playlists: 'test4/streaming-playlists/'
+  redundancy: 'test4/redundancy/'
   logs: 'test4/logs/'
   previews: 'test4/previews/'
   thumbnails: 'test4/thumbnails/'
   torrents: 'test4/torrents/'
+  captions: 'test4/captions/'
   cache: 'test4/cache/'
+  plugins: 'test4/plugins/'
+  client_overrides: 'test4/client-overrides/'
 
 admin:
   email: 'admin4@example.com'
