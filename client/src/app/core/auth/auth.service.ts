@@ -1,19 +1,14 @@
-import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http'
-import { Injectable } from '@angular/core'
+import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular/common/http'
+import { inject, Injectable } from '@angular/core'
 import { Router } from '@angular/router'
-import { NotificationsService } from 'angular2-notifications'
-import 'rxjs/add/observable/throw'
-import 'rxjs/add/operator/do'
-import 'rxjs/add/operator/map'
-import 'rxjs/add/operator/mergeMap'
-import { Observable } from 'rxjs/Observable'
-import { ReplaySubject } from 'rxjs/ReplaySubject'
-import { Subject } from 'rxjs/Subject'
-import { OAuthClientLocal, User as UserServerModel, UserRefreshToken } from '../../../../../shared'
-import { User } from '../../../../../shared/models/users'
-import { UserLogin } from '../../../../../shared/models/users/user-login.model'
+import { Hotkey, HotkeysService } from '@app/core'
+import { Notifier } from '@app/core/notification/notifier.service'
+import { HttpStatusCode, OAuthClientLocal, User, UserLogin, UserRefreshToken, MyUser as UserServerModel } from '@peertube/peertube-models'
+import { logger, OAuthUserTokens, objectToUrlEncoded, peertubeLocalStorage, PeerTubeReconnectError } from '@root-helpers/index'
+import { Observable, of, ReplaySubject, Subject, throwError } from 'rxjs'
+import { catchError, map, mergeMap, share, tap } from 'rxjs/operators'
 import { environment } from '../../../environments/environment'
-import { RestExtractor } from '../../shared/rest'
+import { RestExtractor } from '../rest/rest-extractor.service'
 import { AuthStatus } from './auth-status.model'
 import { AuthUser } from './auth-user.model'
 
@@ -28,57 +23,94 @@ type UserLoginWithUserInformation = UserLoginWithUsername & User
 
 @Injectable()
 export class AuthService {
+  private http = inject(HttpClient)
+  private notifier = inject(Notifier)
+  private hotkeysService = inject(HotkeysService)
+  private restExtractor = inject(RestExtractor)
+  private router = inject(Router)
+
   private static BASE_CLIENT_URL = environment.apiUrl + '/api/v1/oauth-clients/local'
   private static BASE_TOKEN_URL = environment.apiUrl + '/api/v1/users/token'
+  private static BASE_REVOKE_TOKEN_URL = environment.apiUrl + '/api/v1/users/revoke-token'
   private static BASE_USER_INFORMATION_URL = environment.apiUrl + '/api/v1/users/me'
+  private static LS_OAUTH_CLIENT_KEYS = {
+    CLIENT_ID: 'client_id',
+    CLIENT_SECRET: 'client_secret'
+  }
 
   loginChangedSource: Observable<AuthStatus>
   userInformationLoaded = new ReplaySubject<boolean>(1)
+  tokensRefreshed = new ReplaySubject<void>(1)
+  loggedInHotkeys: Hotkey[]
 
-  private clientId: string
-  private clientSecret: string
+  private clientId: string = peertubeLocalStorage.getItem(AuthService.LS_OAUTH_CLIENT_KEYS.CLIENT_ID)
+  private clientSecret: string = peertubeLocalStorage.getItem(AuthService.LS_OAUTH_CLIENT_KEYS.CLIENT_SECRET)
   private loginChanged: Subject<AuthStatus>
   private user: AuthUser = null
+  private refreshingTokenObservable: Observable<void>
 
-  constructor (
-    private http: HttpClient,
-    private notificationsService: NotificationsService,
-    private restExtractor: RestExtractor,
-    private router: Router
-   ) {
+  constructor () {
     this.loginChanged = new Subject<AuthStatus>()
     this.loginChangedSource = this.loginChanged.asObservable()
 
-    // Return null if there is nothing to load
-    this.user = AuthUser.load()
+    // Set HotKeys
+    this.loggedInHotkeys = [
+      new Hotkey('m s', e => {
+        this.router.navigate([ '/videos/subscriptions' ])
+        return false
+      }, $localize`Go to my subscriptions`),
+      new Hotkey('m v', e => {
+        this.router.navigate([ '/my-library/videos' ])
+        return false
+      }, $localize`Go to my videos`),
+      new Hotkey('m i', e => {
+        this.router.navigate([ '/my-library/video-imports' ])
+        return false
+      }, $localize`Go to my imports`),
+      new Hotkey('m c', e => {
+        this.router.navigate([ '/my-library/video-channels' ])
+        return false
+      }, $localize`Go to my channels`),
+      new Hotkey('m p', e => {
+        this.router.navigate([ '/my-library/video-playlists' ])
+        return false
+      }, $localize`Go to my playlists`)
+    ]
+  }
+
+  buildAuthUser (userInfo: Partial<User>, tokens: OAuthUserTokens) {
+    this.user = new AuthUser(userInfo, tokens)
+
+    this.hotkeysService.add(this.loggedInHotkeys)
   }
 
   loadClientCredentials () {
     // Fetch the client_id/client_secret
-    // FIXME: save in local storage?
     this.http.get<OAuthClientLocal>(AuthService.BASE_CLIENT_URL)
-             .catch(res => this.restExtractor.handleError(res))
-             .subscribe(
-               res => {
-                 this.clientId = res.client_id
-                 this.clientSecret = res.client_secret
-                 console.log('Client credentials loaded.')
-               },
+      .pipe(catchError(res => this.restExtractor.handleError(res)))
+      .subscribe({
+        next: res => {
+          this.clientId = res.client_id
+          this.clientSecret = res.client_secret
 
-               error => {
-                 let errorMessage = error.message
+          peertubeLocalStorage.setItem(AuthService.LS_OAUTH_CLIENT_KEYS.CLIENT_ID, this.clientId)
+          peertubeLocalStorage.setItem(AuthService.LS_OAUTH_CLIENT_KEYS.CLIENT_SECRET, this.clientSecret)
 
-                 if (error.status === 403) {
-                   errorMessage = `Cannot retrieve OAuth Client credentials: ${error.text}. \n`
-                   errorMessage += 'Ensure you have correctly configured PeerTube (config/ directory), ' +
-                     'in particular the "webserver" section.'
-                 }
+          logger.info('Client credentials loaded.')
+        },
 
-                 // We put a bigger timeout
-                 // This is an important message
-                 this.notificationsService.error('Error', errorMessage, { timeOut: 7000 })
-               }
-             )
+        error: err => {
+          let errorMessage = err.message
+
+          if (err.status === HttpStatusCode.FORBIDDEN_403) {
+            errorMessage = $localize`Cannot retrieve OAuth Client credentials: ${err.message}.
+Ensure you have correctly configured PeerTube (config/ directory), in particular the "webserver" section.`
+          }
+
+          // We put a bigger timeout: this is an important message
+          this.notifier.error(errorMessage, $localize`Error`, 7000)
+        }
+      })
   }
 
   getRefreshToken () {
@@ -115,64 +147,105 @@ export class AuthService {
     return !!this.getAccessToken()
   }
 
-  login (username: string, password: string) {
-    // Form url encoded
-    const body = new URLSearchParams()
-    body.set('client_id', this.clientId)
-    body.set('client_secret', this.clientSecret)
-    body.set('response_type', 'code')
-    body.set('grant_type', 'password')
-    body.set('scope', 'upload')
-    body.set('username', username)
-    body.set('password', password)
+  login (options: {
+    username: string
+    password: string
+    otpToken?: string
+    token?: string
+  }) {
+    const { username, password, token, otpToken } = options
 
-    const headers = new HttpHeaders().set('Content-Type', 'application/x-www-form-urlencoded')
-    return this.http.post<UserLogin>(AuthService.BASE_TOKEN_URL, body.toString(), { headers })
-                    .map(res => Object.assign(res, { username }))
-                    .flatMap(res => this.mergeUserInformation(res))
-                    .map(res => this.handleLogin(res))
-                    .catch(res => this.restExtractor.handleError(res))
+    // Form url encoded
+    const body = {
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
+      response_type: 'code',
+      grant_type: 'password',
+      scope: 'upload',
+      username: (username || '').trim(),
+      password
+    }
+
+    if (token) Object.assign(body, { externalAuthToken: token })
+
+    let headers = new HttpHeaders().set('Content-Type', 'application/x-www-form-urlencoded')
+    if (otpToken) headers = headers.set('x-peertube-otp', otpToken)
+
+    return this.http.post<UserLogin>(AuthService.BASE_TOKEN_URL, objectToUrlEncoded(body), { headers })
+      .pipe(
+        map(res => Object.assign(res, { username })),
+        mergeMap(res => this.mergeUserInformation(res)),
+        map(res => this.handleLogin(res)),
+        catchError(res => this.restExtractor.handleError(res))
+      )
   }
 
   logout () {
-    // TODO: make an HTTP request to revoke the tokens
-    this.user = null
+    const authHeaderValue = this.getRequestHeaderValue()
 
-    AuthUser.flush()
+    const obs: Observable<{ redirectUrl?: string }> = authHeaderValue
+      ? this.http.post(AuthService.BASE_REVOKE_TOKEN_URL, {}, { headers: new HttpHeaders().set('Authorization', authHeaderValue) })
+      : of({})
+
+    obs.subscribe({
+      next: res => {
+        if (res.redirectUrl) {
+          window.location.href = res.redirectUrl
+        }
+      },
+
+      error: err => {
+        if (!(err instanceof PeerTubeReconnectError)) {
+          logger.error(err)
+        }
+      }
+    })
+
+    this.user = null
 
     this.setStatus(AuthStatus.LoggedOut)
   }
 
   refreshAccessToken () {
-    console.log('Refreshing token...')
+    if (this.refreshingTokenObservable) return this.refreshingTokenObservable
+    if (!this.getAccessToken()) return throwError(() => new PeerTubeReconnectError($localize`You need to reconnect`, true))
+
+    logger.info('Refreshing token...')
 
     const refreshToken = this.getRefreshToken()
 
     // Form url encoded
     const body = new HttpParams().set('refresh_token', refreshToken)
-                                 .set('client_id', this.clientId)
-                                 .set('client_secret', this.clientSecret)
-                                 .set('response_type', 'code')
-                                 .set('grant_type', 'refresh_token')
+      .set('client_id', this.clientId)
+      .set('client_secret', this.clientSecret)
+      .set('response_type', 'code')
+      .set('grant_type', 'refresh_token')
 
     const headers = new HttpHeaders().set('Content-Type', 'application/x-www-form-urlencoded')
 
-    return this.http.post<UserRefreshToken>(AuthService.BASE_TOKEN_URL, body, { headers })
-                    .map(res => this.handleRefreshToken(res))
-                    .catch(err => {
-                      console.error(err)
-                      console.log('Cannot refresh token -> logout...')
-                      this.logout()
-                      this.router.navigate(['/login'])
+    this.refreshingTokenObservable = this.http.post<UserRefreshToken>(AuthService.BASE_TOKEN_URL, body, { headers })
+      .pipe(
+        map(res => this.handleRefreshToken(res)),
+        tap(() => {
+          this.refreshingTokenObservable = null
+        }),
+        catchError(err => {
+          logger.clientError(err.message, err)
+          this.logout()
 
-                      return Observable.throw({
-                        error: 'You need to reconnect.'
-                      })
-                    })
+          this.notifier.info($localize`Your authentication has expired, you need to reconnect.`, undefined, undefined, true)
+          this.refreshingTokenObservable = null
+
+          throw new PeerTubeReconnectError($localize`You need to reconnect`, true)
+        }),
+        share()
+      )
+
+    return this.refreshingTokenObservable
   }
 
   refreshUserInformation () {
-    const obj = {
+    const obj: UserLoginWithUsername = {
       access_token: this.user.getAccessToken(),
       refresh_token: null,
       token_type: this.user.getTokenType(),
@@ -180,14 +253,21 @@ export class AuthService {
     }
 
     this.mergeUserInformation(obj)
-      .subscribe(
-        res => {
+      .subscribe({
+        next: res => {
           this.user.patch(res)
-          this.user.save()
 
           this.userInformationLoaded.next(true)
         }
-      )
+      })
+  }
+
+  isOTPMissingError (err: HttpErrorResponse) {
+    if (err.status !== HttpStatusCode.UNAUTHORIZED_401) return false
+
+    if (err.headers.get('x-peertube-otp') !== 'required; app') return false
+
+    return true
   }
 
   private mergeUserInformation (obj: UserLoginWithUsername): Observable<UserLoginWithUserInformation> {
@@ -195,7 +275,7 @@ export class AuthService {
     const headers = new HttpHeaders().set('Authorization', `${obj.token_type} ${obj.access_token}`)
 
     return this.http.get<UserServerModel>(AuthService.BASE_USER_INFORMATION_URL, { headers })
-                    .map(res => Object.assign(obj, res))
+      .pipe(map(res => Object.assign(obj, res)))
   }
 
   private handleLogin (obj: UserLoginWithUserInformation) {
@@ -206,7 +286,6 @@ export class AuthService {
     }
 
     this.user = new AuthUser(obj, hashTokens)
-    this.user.save()
 
     this.setStatus(AuthStatus.LoggedIn)
     this.userInformationLoaded.next(true)
@@ -214,10 +293,16 @@ export class AuthService {
 
   private handleRefreshToken (obj: UserRefreshToken) {
     this.user.refreshTokens(obj.access_token, obj.refresh_token)
-    this.user.save()
+    this.tokensRefreshed.next()
   }
 
   private setStatus (status: AuthStatus) {
     this.loginChanged.next(status)
+
+    if (status === AuthStatus.LoggedIn) {
+      this.hotkeysService.add(this.loggedInHotkeys)
+    } else {
+      this.hotkeysService.remove(this.loggedInHotkeys)
+    }
   }
 }

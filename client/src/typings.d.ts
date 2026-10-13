@@ -1,5 +1,11 @@
 /* SystemJS module definition */
-declare var module: NodeModule;
+// eslint-disable-next-line no-var
+declare var module: NodeModule
+
 interface NodeModule {
-  id: string;
+  id: string
 }
+
+declare module 'markdown-it-emoji/lib/light.mjs'
+
+declare module '*.scss'

@@ -1,48 +1,148 @@
-import { enableProdMode } from '@angular/core'
-import { platformBrowserDynamic } from '@angular/platform-browser-dynamic'
-
-import { AppModule } from './app/app.module'
+import { APP_BASE_HREF, registerLocaleData } from '@angular/common'
+import { provideHttpClient, withInterceptors } from '@angular/common/http'
+import {
+  ApplicationRef,
+  enableProdMode,
+  importProvidersFrom,
+  inject,
+  provideAppInitializer,
+  provideZoneChangeDetection
+} from '@angular/core'
+import { BrowserModule, bootstrapApplication, enableDebugTools } from '@angular/platform-browser'
+import { RouteReuseStrategy, provideRouter, withInMemoryScrolling, withPreloading } from '@angular/router'
+import { ServiceWorkerModule } from '@angular/service-worker'
+import { PTPrimeTheme } from '@app/core/theme/primeng/primeng-theme'
+import localeOc from '@app/helpers/locales/oc'
+import { getFormProviders } from '@app/shared/shared-forms/shared-form-providers'
+import { languageInterceptor } from '@app/shared/shared-main/http/language-interceptor.service'
+import { NgbModalModule } from '@ng-bootstrap/ng-bootstrap'
+import { LoadingBarHttpClientModule } from '@ngx-loading-bar/http-client'
+import { providePrimeNG } from 'primeng/config'
+import { ToastModule } from 'primeng/toast'
+import { switchMap } from 'rxjs/operators'
+import { AppComponent } from './app/app.component'
+import routes from './app/app.routes'
+import {
+  CustomReuseStrategy,
+  PluginService,
+  PreloadSelectedModulesList,
+  RedirectService,
+  ServerService,
+  ThemeService,
+  getCoreProviders
+} from './app/core'
+import { getMainProviders } from './app/shared/shared-main/main-providers'
 import { environment } from './environments/environment'
+import { logger } from './root-helpers'
 
-import { hmrBootstrap } from './hmr'
+registerLocaleData(localeOc, 'oc')
+
+export function loadConfigFactory (
+  server: ServerService,
+  pluginService: PluginService,
+  themeService: ThemeService,
+  redirectService: RedirectService
+) {
+  const initializeServices = () => {
+    redirectService.init()
+    themeService.initialize()
+
+    return pluginService.initializePlugins()
+  }
+
+  return () => {
+    const result = server.loadHTMLConfig()
+    if (result) return result.pipe(switchMap(() => initializeServices()))
+
+    return initializeServices()
+  }
+}
 
 if (environment.production) {
   enableProdMode()
 }
 
-const bootstrap = () => platformBrowserDynamic()
-  .bootstrapModule(AppModule)
-  .then(bootstrapModule => {
-    // TODO: Uncomment and remove unregistration when https://github.com/angular/angular/issues/21191 is fixed
-    // TODO: Remove when https://github.com/angular/angular-cli/issues/8779 is fixed?
-    // if ('serviceWorker' in navigator && environment.production) {
-    //   navigator.serviceWorker.register('/ngsw-worker.js')
-    //     .catch(err => console.error('Cannot register service worker.', err))
-    // }
+logger.registerServerSending(environment.apiUrl)
 
-    if (navigator.serviceWorker) {
-      navigator.serviceWorker.getRegistrations()
-        .then(registrations => {
-          for (const registration of registrations) {
-            registration.unregister()
-          }
+const bootstrap = () => {
+  return bootstrapApplication(AppComponent, {
+    providers: [
+      provideZoneChangeDetection({ eventCoalescing: true }),
+
+      importProvidersFrom(
+        BrowserModule,
+        ServiceWorkerModule.register('ngsw-worker.js', { enabled: environment.production })
+      ),
+
+      provideHttpClient(
+        withInterceptors([ languageInterceptor ])
+      ),
+
+      importProvidersFrom(
+        LoadingBarHttpClientModule,
+        ToastModule,
+        NgbModalModule
+      ),
+
+      getCoreProviders(),
+      getMainProviders(),
+      getFormProviders(),
+
+      PreloadSelectedModulesList,
+      { provide: RouteReuseStrategy, useClass: CustomReuseStrategy },
+
+      provideRouter(
+        routes,
+        withPreloading(PreloadSelectedModulesList),
+        withInMemoryScrolling({
+          anchorScrolling: 'disabled',
+          // Redefined in app component
+          scrollPositionRestoration: 'disabled'
         })
+      ),
+
+      {
+        provide: APP_BASE_HREF,
+        useValue: '/'
+      },
+      provideAppInitializer(() => {
+        const initializerFn = loadConfigFactory(inject(ServerService), inject(PluginService), inject(ThemeService), inject(RedirectService))
+
+        return initializerFn()
+      }),
+
+      providePrimeNG({
+        theme: {
+          preset: PTPrimeTheme
+        }
+      })
+    ]
+  }).then(bootstrapModule => {
+    if (!environment.production) {
+      const applicationRef = bootstrapModule.injector.get(ApplicationRef)
+      const componentRef = applicationRef.components[0]
+
+      // allows to run `ng.profiler.timeChangeDetection();`
+      enableDebugTools(componentRef)
     }
 
     return bootstrapModule
-  })
-  .catch(err => {
-    console.error(err)
-    return null
-  })
+  }).catch(err => {
+    try {
+      logger.error(err)
+    } catch (err2) {
+      console.error('Cannot log error', { err, err2 })
+    }
 
-if (environment.hmr) {
-  if (module[ 'hot' ]) {
-    hmrBootstrap(module, bootstrap)
-  } else {
-    console.error('HMR is not enabled for webpack-dev-server!')
-    console.log('Are you using the --hmr flag for ng serve?')
-  }
-} else {
-  bootstrap()
+    // Ensure we display an "incompatible message" on Angular bootstrap error
+    setTimeout(() => {
+      if (document.querySelector('my-app').innerHTML === '') {
+        throw err
+      }
+    }, 1000)
+
+    return null as any
+  })
 }
+
+bootstrap()

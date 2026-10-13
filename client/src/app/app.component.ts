@@ -1,59 +1,122 @@
-import { Component, OnInit } from '@angular/core'
+import { getLocaleDirection, NgClass, PlatformLocation } from '@angular/common'
+import { AfterViewInit, Component, DOCUMENT, inject, LOCALE_ID, OnDestroy, OnInit, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser'
-import { GuardsCheckStart, Router } from '@angular/router'
-import { AuthService, RedirectService, ServerService } from '@app/core'
-import { isInSmallView } from '@app/shared/misc/utils'
+import { Event, GuardsCheckStart, NavigationStart, RouteConfigLoadEnd, RouteConfigLoadStart, Router, RouterOutlet } from '@angular/router'
+import {
+  AuthService,
+  Hotkey,
+  HotkeysService,
+  MarkdownService,
+  PeerTubeRouterService,
+  RedirectService,
+  RouterStatusService,
+  ScreenService,
+  ScrollService,
+  ServerService,
+  User,
+  UserLocalStorageService
+} from '@app/core'
+import { HooksService } from '@app/core/plugins/hooks.service'
+import { PluginService } from '@app/core/plugins/plugin.service'
+import { AccountSetupWarningModalComponent } from '@app/modal/account-setup-warning-modal.component'
+import { AdminConfigWizardModalComponent } from '@app/modal/admin-config-wizard/admin-config-wizard-modal.component'
+import { CustomModalComponent } from '@app/modal/custom-modal.component'
+import { InstanceConfigWarningModalComponent } from '@app/modal/instance-config-warning-modal.component'
+import { NgbConfig, NgbModal } from '@ng-bootstrap/ng-bootstrap'
+import { LoadingBarModule, LoadingBarService } from '@ngx-loading-bar/core'
+import { getShortLocale } from '@peertube/peertube-core-utils'
+import { BroadcastMessageLevel, HTMLServerConfig, UserRole } from '@peertube/peertube-models'
+import { logger } from '@root-helpers/logger'
+import { peertubeLocalStorage } from '@root-helpers/peertube-web-storage'
+import { SharedModule } from 'primeng/api'
+import { ToastModule } from 'primeng/toast'
+import { forkJoin } from 'rxjs'
+import { filter, first, map } from 'rxjs/operators'
+import { MenuService } from './core/menu/menu.service'
+import { HeaderComponent } from './header/header.component'
+import { POP_STATE_MODAL_DISMISS } from './helpers'
+import { HotkeysCheatSheetComponent } from './hotkeys/hotkeys-cheat-sheet.component'
+import { MenuComponent } from './menu/menu.component'
+import { ConfirmComponent } from './modal/confirm.component'
+import { GlobalIconComponent, GlobalIconName } from './shared/shared-icons/global-icon.component'
+import { InstanceService } from './shared/shared-main/instance/instance.service'
+import { PeertubeModalService } from './shared/shared-main/peertube-modal/peertube-modal.service'
 
 @Component({
   selector: 'my-app',
   templateUrl: './app.component.html',
-  styleUrls: [ './app.component.scss' ]
+  styleUrls: [ './app.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [
+    HotkeysCheatSheetComponent,
+    NgClass,
+    HeaderComponent,
+    MenuComponent,
+    GlobalIconComponent,
+    RouterOutlet,
+    LoadingBarModule,
+    ConfirmComponent,
+    ToastModule,
+    SharedModule,
+    AccountSetupWarningModalComponent,
+    InstanceConfigWarningModalComponent,
+    CustomModalComponent,
+    AdminConfigWizardModalComponent
+  ]
 })
-export class AppComponent implements OnInit {
-  notificationOptions = {
-    timeOut: 5000,
-    lastOnBottom: true,
-    clickToClose: true,
-    maxLength: 0,
-    maxStack: 7,
-    showProgressBar: false,
-    pauseOnHover: false,
-    preventDuplicates: false,
-    preventLastDuplicates: 'visible',
-    rtl: false
-  }
+export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
+  private document = inject<Document>(DOCUMENT)
+  private localeId = inject(LOCALE_ID)
+  private router = inject(Router)
+  private authService = inject(AuthService)
+  private serverService = inject(ServerService)
+  private peertubeRouter = inject(PeerTubeRouterService)
+  private pluginService = inject(PluginService)
+  private instanceService = inject(InstanceService)
+  private domSanitizer = inject(DomSanitizer)
+  private screenService = inject(ScreenService)
+  private hotkeysService = inject(HotkeysService)
+  private hooks = inject(HooksService)
+  private location = inject(PlatformLocation)
+  private modalService = inject(NgbModal)
+  private markdownService = inject(MarkdownService)
+  private ngbConfig = inject(NgbConfig)
+  private loadingBar = inject(LoadingBarService)
+  private scrollService = inject(ScrollService)
+  private userLocalStorage = inject(UserLocalStorageService)
+  private peertubeModal = inject(PeertubeModalService)
+  private routerStatus = inject(RouterStatusService)
+  private redirectService = inject(RedirectService)
 
-  isMenuDisplayed = true
+  menu = inject(MenuService)
+
+  private static LS_BROADCAST_MESSAGE = 'app-broadcast-message-dismissed'
+
+  readonly accountSetupWarningModal = viewChild<AccountSetupWarningModalComponent>('accountSetupWarningModal')
+  readonly adminConfigWizardModal = viewChild<AdminConfigWizardModalComponent>('adminConfigWizardModal')
+  readonly instanceConfigWarningModal = viewChild<InstanceConfigWarningModalComponent>('instanceConfigWarningModal')
+  readonly customModal = viewChild<CustomModalComponent>('customModal')
 
   customCSS: SafeHtml
+  broadcastMessage: { message: string, dismissable: boolean, class: string } | null = null
+  hotkeysModalOpened = false
+  toastPosition: 'bottom-right' | 'bottom-left' = 'bottom-right'
 
-  constructor (
-    private router: Router,
-    private authService: AuthService,
-    private serverService: ServerService,
-    private domSanitizer: DomSanitizer,
-    private redirectService: RedirectService
-  ) {}
+  private serverConfig: HTMLServerConfig
+  private userLoaded = false
 
-  get serverVersion () {
-    return this.serverService.getConfig().serverVersion
-  }
-
-  get instanceName () {
-    return this.serverService.getConfig().instance.name
-  }
-
-  get defaultRoute () {
-    return RedirectService.DEFAULT_ROUTE
+  constructor () {
+    this.ngbConfig.animation = false
   }
 
   ngOnInit () {
     document.getElementById('incompatible-browser').className += ' browser-ok'
 
-    const pathname = window.location.pathname
-    if (!pathname || pathname === '/') {
-      this.redirectService.redirectToHomepage()
-    }
+    this.loadUser()
+
+    this.serverConfig = this.serverService.getHTMLConfig()
+
+    this.hooks.runAction('action:application.init', 'common')
 
     this.authService.loadClientCredentials()
 
@@ -62,61 +125,306 @@ export class AppComponent implements OnInit {
       this.authService.refreshUserInformation()
     }
 
-    // Load custom data from server
-    this.serverService.loadConfig()
-    this.serverService.loadVideoCategories()
-    this.serverService.loadVideoLanguages()
-    this.serverService.loadVideoLicences()
-    this.serverService.loadVideoPrivacies()
+    this.initRouteEvents()
+    this.scrollService.enableScrollRestoration()
 
-    // Do not display menu on small screens
-    if (isInSmallView()) {
-      this.isMenuDisplayed = false
-    }
+    this.injectJS()
+    this.injectCSS()
+    this.injectBroadcastMessage()
 
-    this.router.events.subscribe(
-      e => {
-        // User clicked on a link in the menu, change the page
-        if (e instanceof GuardsCheckStart && isInSmallView()) {
-          this.isMenuDisplayed = false
-        }
-      }
-    )
+    this.serverService.configReloaded
+      .subscribe(config => {
+        this.serverConfig = config
 
-    this.serverService.configLoaded
-      .subscribe(() => {
-        const config = this.serverService.getConfig()
+        this.injectBroadcastMessage()
+        this.injectCSS()
 
-        // We test customCSS if the admin removed the css
-        if (this.customCSS || config.instance.customizations.css) {
-          const styleTag = '<style>' + config.instance.customizations.css + '</style>'
-          this.customCSS = this.domSanitizer.bypassSecurityTrustHtml(styleTag)
-        }
-
-        if (config.instance.customizations.javascript) {
-          try {
-            // tslint:disable:no-eval
-            eval(config.instance.customizations.javascript)
-          } catch (err) {
-            console.error('Cannot eval custom JavaScript.', err)
-          }
-        }
+        // Don't reinject JS since it could conflict with existing one
       })
+
+    this.initHotkeys()
+
+    this.location.onPopState(() => this.modalService.dismissAll(POP_STATE_MODAL_DISMISS))
+
+    this.listenUserChangeForModals()
+
+    this.document.documentElement.lang = getShortLocale(this.localeId)
+    this.document.documentElement.dir = getLocaleDirection(this.localeId)
+
+    this.pluginService.addAction('application:increment-loader', () => {
+      this.loadingBar.useRef('plugins').start()
+
+      return Promise.resolve()
+    })
+    this.pluginService.addAction('application:decrement-loader', () => {
+      this.loadingBar.useRef('plugins').complete()
+
+      return Promise.resolve()
+    })
+
+    this.peertubeModal.openAdminConfigWizardSubject.subscribe(({ showWelcome }) => {
+      const adminWelcomeModal = this.adminConfigWizardModal()
+      if (!adminWelcomeModal) return
+
+      adminWelcomeModal.show({ showWelcome })
+    })
+
+    if (getLocaleDirection(this.localeId) === 'rtl') {
+      this.toastPosition = 'bottom-left'
+    }
   }
+
+  ngAfterViewInit () {
+    this.pluginService.initializeCustomModal(this.customModal())
+  }
+
+  ngOnDestroy () {
+    this.pluginService.removeAction('application:increment-loader')
+    this.pluginService.removeAction('application:decrement-loader')
+  }
+
+  // ---------------------------------------------------------------------------
 
   isUserLoggedIn () {
     return this.authService.isLoggedIn()
   }
 
-  toggleMenu () {
-    window.scrollTo(0, 0)
-    this.isMenuDisplayed = !this.isMenuDisplayed
+  isUserAdmin () {
+    return this.isUserLoggedIn() && this.authService.getUser().role.id === UserRole.ADMINISTRATOR
   }
 
-  getMainColClasses () {
-    // Take all width is the menu is not displayed
-    if (this.isMenuDisplayed === false) return [ 'expanded' ]
+  hideBroadcastMessage () {
+    peertubeLocalStorage.setItem(AppComponent.LS_BROADCAST_MESSAGE, this.serverConfig.broadcastMessage.message)
 
-    return []
+    this.broadcastMessage = null
+    this.screenService.isBroadcastMessageDisplayed = false
+  }
+
+  // ---------------------------------------------------------------------------
+
+  getNotificationIcon (message: { severity: 'success' | 'error' | 'info' }): GlobalIconName {
+    switch (message.severity) {
+      case 'error':
+        return 'cross'
+
+      case 'success':
+        return 'tick'
+
+      case 'info':
+        return 'help'
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private initRouteEvents () {
+    const eventsObs = this.router.events
+
+    // Plugin hooks
+    this.peertubeRouter.getNavigationEndEvents().subscribe(e => {
+      this.hooks.runAction('action:router.navigation-end', 'common', { path: e.url })
+    })
+
+    // Automatically hide/display the menu
+    eventsObs.pipe(
+      filter((e: Event): e is GuardsCheckStart => e instanceof GuardsCheckStart),
+      filter(() => this.screenService.isInSmallView() || this.screenService.isInTouchScreen())
+    ).subscribe(() => this.menu.setMenuCollapsed(true)) // User clicked on a link in the menu, change the page
+
+    // ---------------------------------------------------------------------------
+    // Handle lazy loaded module
+    // ---------------------------------------------------------------------------
+    eventsObs.pipe(
+      filter((e: Event): e is RouteConfigLoadStart => e instanceof RouteConfigLoadStart)
+    ).subscribe(e => {
+      if (e.route.data?.preloaded) return // This route is preloaded, don't display the loading indicator
+
+      this.loadingBar.useRef('router-' + e.route.path).start()
+    })
+
+    eventsObs.pipe(
+      filter((e: Event): e is RouteConfigLoadEnd => e instanceof RouteConfigLoadEnd)
+    ).subscribe(e => {
+      if (e.route.data?.preloaded) return // This route is preloaded, don't display the loading indicator
+
+      this.loadingBar.useRef('router-' + e.route.path).complete()
+    })
+
+    // ---------------------------------------------------------------------------
+
+    // We need this to prevent circular dependency between the router and the custom reuse strategy
+    eventsObs.pipe(
+      filter((e: Event): e is NavigationStart => e instanceof NavigationStart)
+    ).subscribe(() => {
+      const current = this.router.currentNavigation()
+
+      this.routerStatus.isNavigatingBack = current?.trigger === 'popstate' || current?.extras.state?.trigger === 'popstate'
+    })
+  }
+
+  private async injectBroadcastMessage () {
+    this.broadcastMessage = null
+    this.screenService.isBroadcastMessageDisplayed = false
+
+    const messageConfig = this.serverConfig.broadcastMessage
+
+    if (messageConfig.enabled) {
+      // Already dismissed this message?
+      if (messageConfig.dismissable && peertubeLocalStorage.getItem(AppComponent.LS_BROADCAST_MESSAGE) === messageConfig.message) {
+        return
+      }
+
+      const classes: { [id in BroadcastMessageLevel]: string } = {
+        info: 'alert-info',
+        warning: 'alert-warning',
+        error: 'alert-danger'
+      }
+
+      const root = document.createElement('div')
+      root.innerHTML = await this.markdownService.markdownToUnsafeHTML({ markdown: messageConfig.message })
+      // Use alert-link class on links since there will be in an alert block
+      root.querySelectorAll('a').forEach(a => a.className += ' alert-link')
+
+      this.broadcastMessage = {
+        message: root.innerHTML,
+        dismissable: messageConfig.dismissable,
+        class: classes[messageConfig.level]
+      }
+
+      this.screenService.isBroadcastMessageDisplayed = true
+    }
+  }
+
+  private injectJS () {
+    // Inject JS
+    if (this.serverConfig.instance.customizations.javascript) {
+      try {
+        window.eval(this.serverConfig.instance.customizations.javascript)
+      } catch (err) {
+        logger.error('Cannot eval custom JavaScript.', err)
+      }
+    }
+  }
+
+  private injectCSS () {
+    const headStyle = document.querySelector('style.custom-css-style')
+    if (headStyle) headStyle.parentNode.removeChild(headStyle)
+
+    // We test customCSS if the admin removed the css
+    if (this.customCSS || this.serverConfig.instance.customizations.css) {
+      const styleTag = '<style>' + this.serverConfig.instance.customizations.css + '</style>'
+      this.customCSS = this.domSanitizer.bypassSecurityTrustHtml(styleTag)
+    }
+  }
+
+  private listenUserChangeForModals () {
+    this.authService.userInformationLoaded
+      .pipe(map(() => this.authService.getUser()))
+      .subscribe(user => {
+        this.userLoaded = true
+        this.openModalsIfNeeded(user)
+      })
+  }
+
+  onModalCreated () {
+    const user = this.authService.getUser()
+    if (!user) return
+
+    setTimeout(() => this.openModalsIfNeeded(user))
+  }
+
+  private openModalsIfNeeded (user: User) {
+    if (!this.userLoaded) return
+
+    if (user.role.id === UserRole.ADMINISTRATOR) {
+      this.openAdminModalsIfNeeded(user)
+    } else {
+      this.openAccountModalsIfNeeded(user)
+    }
+  }
+
+  private openAdminModalsIfNeeded (user: User) {
+    const adminWelcomeModal = this.adminConfigWizardModal()
+    if (!adminWelcomeModal) return
+
+    if (adminWelcomeModal.shouldAutoOpen(user)) {
+      return adminWelcomeModal.show({ showWelcome: true })
+    }
+
+    const instanceConfigWarningModal = this.instanceConfigWarningModal()
+    if (!instanceConfigWarningModal) return
+    if (!instanceConfigWarningModal.canBeOpenByUser(user)) return
+
+    forkJoin([
+      this.serverService.getConfig().pipe(first()),
+      this.instanceService.getAboutWithCache().pipe(first())
+    ]).subscribe(([ config, about ]) => {
+      const instanceConfigWarningModalValue = this.instanceConfigWarningModal()
+      if (instanceConfigWarningModalValue.shouldAutoOpen(config, about)) {
+        instanceConfigWarningModalValue.show(about)
+      }
+    })
+  }
+
+  private openAccountModalsIfNeeded (user: User) {
+    const accountSetupWarningModal = this.accountSetupWarningModal()
+    if (!accountSetupWarningModal) return
+
+    if (accountSetupWarningModal.shouldAutoOpen(user)) {
+      accountSetupWarningModal.show(user)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private initHotkeys () {
+    this.hotkeysService.add([
+      new Hotkey([ 'Shift+/', 's' ], () => {
+        document.getElementById('search-video').focus()
+        return false
+      }, $localize`Focus the search bar`),
+
+      new Hotkey('b', () => {
+        this.menu.toggleMenu()
+        return false
+      }, $localize`Toggle the left menu`),
+
+      new Hotkey('g o', () => {
+        this.router.navigate([ '/videos/overview' ])
+        return false
+      }, $localize`Go to the "Discover videos" page`),
+
+      new Hotkey('g v', () => {
+        this.router.navigate([ '/videos/browse' ])
+        return false
+      }, $localize`Go to the "Browse videos" page`),
+
+      new Hotkey('g p', () => {
+        this.router.navigate([ '/videos/publish' ])
+        return false
+      }, $localize`Go to the "Publish video" page`),
+
+      new Hotkey('g l', () => {
+        this.redirectService.redirectToLogin()
+        return false
+      }, $localize`Go to the login page`)
+    ])
+  }
+
+  onHotkeysModalStateChange (opened: boolean) {
+    this.hotkeysModalOpened = opened
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private loadUser () {
+    const tokens = this.userLocalStorage.getTokens()
+    if (!tokens) return
+
+    const user = this.userLocalStorage.getLoggedInUser()
+    if (!user) return
+
+    // Initialize user
+    this.authService.buildAuthUser(user, tokens)
   }
 }

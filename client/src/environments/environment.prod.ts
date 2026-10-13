@@ -1,5 +1,7 @@
 export const environment = {
   production: true,
   hmr: false,
-  apiUrl: ''
+  apiUrl: '',
+  originServerUrl: '',
+  embedUrl: ''
 }

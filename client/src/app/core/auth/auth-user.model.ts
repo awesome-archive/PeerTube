@@ -1,143 +1,71 @@
-import { peertubeLocalStorage } from '@app/shared/misc/peertube-local-storage'
-import { UserRight } from '../../../../../shared/models/users/user-right.enum'
-// Do not use the barrel (dependency loop)
-import { hasUserRight, UserRole } from '../../../../../shared/models/users/user-role'
-import { User, UserConstructorHash } from '../../shared/users/user.model'
+import { User } from '@app/core/users/user.model'
+import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
+import { hasUserRight } from '@peertube/peertube-core-utils'
+import {
+  MyUserSpecialPlaylist,
+  MyUser as ServerMyUserModel,
+  User as ServerUserModel,
+  UserRightType,
+  UserRole
+} from '@peertube/peertube-models'
+import { OAuthUserTokens } from '@root-helpers/users'
 
-export type TokenOptions = {
-  accessToken: string
-  refreshToken: string
-  tokenType: string
-}
+export class AuthUser extends User implements ServerMyUserModel {
+  oauthTokens: OAuthUserTokens
+  specialPlaylists: MyUserSpecialPlaylist[]
+  videoChannelCollaborations?: ServerMyUserModel['videoChannelCollaborations']
 
-// Private class only used by User
-class Tokens {
-  private static KEYS = {
-    ACCESS_TOKEN: 'access_token',
-    REFRESH_TOKEN: 'refresh_token',
-    TOKEN_TYPE: 'token_type'
-  }
-
-  accessToken: string
-  refreshToken: string
-  tokenType: string
-
-  static load () {
-    const accessTokenLocalStorage = peertubeLocalStorage.getItem(this.KEYS.ACCESS_TOKEN)
-    const refreshTokenLocalStorage = peertubeLocalStorage.getItem(this.KEYS.REFRESH_TOKEN)
-    const tokenTypeLocalStorage = peertubeLocalStorage.getItem(this.KEYS.TOKEN_TYPE)
-
-    if (accessTokenLocalStorage && refreshTokenLocalStorage && tokenTypeLocalStorage) {
-      return new Tokens({
-        accessToken: accessTokenLocalStorage,
-        refreshToken: refreshTokenLocalStorage,
-        tokenType: tokenTypeLocalStorage
-      })
-    }
-
-    return null
-  }
-
-  static flush () {
-    peertubeLocalStorage.removeItem(this.KEYS.ACCESS_TOKEN)
-    peertubeLocalStorage.removeItem(this.KEYS.REFRESH_TOKEN)
-    peertubeLocalStorage.removeItem(this.KEYS.TOKEN_TYPE)
-  }
-
-  constructor (hash?: TokenOptions) {
-    if (hash) {
-      this.accessToken = hash.accessToken
-      this.refreshToken = hash.refreshToken
-
-      if (hash.tokenType === 'bearer') {
-        this.tokenType = 'Bearer'
-      } else {
-        this.tokenType = hash.tokenType
-      }
-    }
-  }
-
-  save () {
-    peertubeLocalStorage.setItem(Tokens.KEYS.ACCESS_TOKEN, this.accessToken)
-    peertubeLocalStorage.setItem(Tokens.KEYS.REFRESH_TOKEN, this.refreshToken)
-    peertubeLocalStorage.setItem(Tokens.KEYS.TOKEN_TYPE, this.tokenType)
-  }
-}
-
-export class AuthUser extends User {
-  private static KEYS = {
-    ID: 'id',
-    ROLE: 'role',
-    EMAIL: 'email',
-    USERNAME: 'username',
-    DISPLAY_NSFW: 'display_nsfw',
-    AUTO_PLAY_VIDEO: 'auto_play_video'
-  }
-
-  tokens: Tokens
-
-  static load () {
-    const usernameLocalStorage = peertubeLocalStorage.getItem(this.KEYS.USERNAME)
-    if (usernameLocalStorage) {
-      return new AuthUser(
-        {
-          id: parseInt(peertubeLocalStorage.getItem(this.KEYS.ID), 10),
-          username: peertubeLocalStorage.getItem(this.KEYS.USERNAME),
-          email: peertubeLocalStorage.getItem(this.KEYS.EMAIL),
-          role: parseInt(peertubeLocalStorage.getItem(this.KEYS.ROLE), 10) as UserRole,
-          displayNSFW: peertubeLocalStorage.getItem(this.KEYS.DISPLAY_NSFW) === 'true',
-          autoPlayVideo: peertubeLocalStorage.getItem(this.KEYS.AUTO_PLAY_VIDEO) === 'true'
-        },
-        Tokens.load()
-      )
-    }
-
-    return null
-  }
-
-  static flush () {
-    peertubeLocalStorage.removeItem(this.KEYS.USERNAME)
-    peertubeLocalStorage.removeItem(this.KEYS.ID)
-    peertubeLocalStorage.removeItem(this.KEYS.ROLE)
-    peertubeLocalStorage.removeItem(this.KEYS.DISPLAY_NSFW)
-    peertubeLocalStorage.removeItem(this.KEYS.AUTO_PLAY_VIDEO)
-    peertubeLocalStorage.removeItem(this.KEYS.EMAIL)
-    Tokens.flush()
-  }
-
-  constructor (userHash: UserConstructorHash, hashTokens: TokenOptions) {
+  constructor (userHash: Partial<ServerMyUserModel>, hashTokens: Partial<OAuthUserTokens>) {
     super(userHash)
-    this.tokens = new Tokens(hashTokens)
+
+    this.oauthTokens = new OAuthUserTokens(hashTokens)
+    this.specialPlaylists = userHash.specialPlaylists
+    this.videoChannelCollaborations = userHash.videoChannelCollaborations
   }
 
   getAccessToken () {
-    return this.tokens.accessToken
+    return this.oauthTokens.accessToken
   }
 
   getRefreshToken () {
-    return this.tokens.refreshToken
+    return this.oauthTokens.refreshToken
   }
 
   getTokenType () {
-    return this.tokens.tokenType
+    return this.oauthTokens.tokenType
   }
 
   refreshTokens (accessToken: string, refreshToken: string) {
-    this.tokens.accessToken = accessToken
-    this.tokens.refreshToken = refreshToken
+    this.oauthTokens.accessToken = accessToken
+    this.oauthTokens.refreshToken = refreshToken
   }
 
-  hasRight (right: UserRight) {
-    return hasUserRight(this.role, right)
+  hasRight (right: UserRightType) {
+    return hasUserRight(this.role.id, right)
   }
 
-  save () {
-    peertubeLocalStorage.setItem(AuthUser.KEYS.ID, this.id.toString())
-    peertubeLocalStorage.setItem(AuthUser.KEYS.USERNAME, this.username)
-    peertubeLocalStorage.setItem(AuthUser.KEYS.EMAIL, this.email)
-    peertubeLocalStorage.setItem(AuthUser.KEYS.ROLE, this.role.toString())
-    peertubeLocalStorage.setItem(AuthUser.KEYS.DISPLAY_NSFW, JSON.stringify(this.displayNSFW))
-    peertubeLocalStorage.setItem(AuthUser.KEYS.AUTO_PLAY_VIDEO, JSON.stringify(this.autoPlayVideo))
-    this.tokens.save()
+  canManageUser (user: ServerUserModel) {
+    const myRole = this.role.id
+
+    if (myRole === UserRole.ADMINISTRATOR) return true
+
+    // I'm a moderator: I can only manage users
+    return user.role.id === UserRole.USER
+  }
+
+  isCollaboratingToChannels () {
+    return this.videoChannelCollaborations.length !== 0
+  }
+
+  isEditorOfChannel (channel?: Pick<VideoChannel, 'id'>) {
+    if (!channel) return false
+
+    return this.videoChannelCollaborations.some(c => c.id === channel.id)
+  }
+
+  isOwnerOfChannel (channel?: Pick<VideoChannel, 'id'>) {
+    if (!channel) return true
+
+    return this.videoChannels.some(c => c.id === channel.id)
   }
 }

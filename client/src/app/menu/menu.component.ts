@@ -1,101 +1,281 @@
-import { Component, OnInit } from '@angular/core'
-import { Router } from '@angular/router'
-import { UserRight } from '../../../../shared/models/users/user-right.enum'
-import { AuthService, AuthStatus, ServerService } from '../core'
-import { User } from '../shared/users/user.model'
+import { CommonModule, getLocaleDirection, NgTemplateOutlet } from '@angular/common'
+import { ChangeDetectionStrategy, Component, inject, LOCALE_ID, OnDestroy, OnInit } from '@angular/core'
+import { Params, RouterLink, RouterLinkActive } from '@angular/router'
+import { AuthService, AuthStatus, AuthUser, HooksService, MenuService, RedirectService, ServerService, UserService } from '@app/core'
+import { GlobalIconComponent, GlobalIconName } from '@app/shared/shared-icons/global-icon.component'
+import { ButtonComponent } from '@app/shared/shared-main/buttons/button.component'
+import { NgbDropdownModule } from '@ng-bootstrap/ng-bootstrap'
+import { UserRight } from '@peertube/peertube-models'
+import debug from 'debug'
+import { of, Subscription } from 'rxjs'
+import { first, map, switchMap } from 'rxjs/operators'
+
+type MenuLink = {
+  icon: GlobalIconName
+  iconClass?: string
+
+  label: string
+
+  path?: string
+  url?: string
+  query?: Params
+
+  isPrimaryButton?: boolean // default false
+
+  ngClass?: string
+}
+
+type MenuSection = {
+  key: string
+  title: string
+  links: MenuLink[]
+}
+
+const debugLogger = debug('peertube:menu:MenuComponent')
 
 @Component({
   selector: 'my-menu',
   templateUrl: './menu.component.html',
-  styleUrls: [ './menu.component.scss' ]
+  styleUrls: [ './menu.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [
+    CommonModule,
+    GlobalIconComponent,
+    RouterLink,
+    RouterLinkActive,
+    NgbDropdownModule,
+    NgTemplateOutlet,
+    ButtonComponent
+  ]
 })
-export class MenuComponent implements OnInit {
-  user: User
-  isLoggedIn: boolean
-  userHasAdminAccess = false
+export class MenuComponent implements OnInit, OnDestroy {
+  private authService = inject(AuthService)
+  private userService = inject(UserService)
+  private localeId = inject(LOCALE_ID)
+  private serverService = inject(ServerService)
+  private hooks = inject(HooksService)
+  private menu = inject(MenuService)
+  private redirectService = inject(RedirectService)
 
-  private routesPerRight = {
-    [UserRight.MANAGE_USERS]: '/admin/users',
-    [UserRight.MANAGE_SERVER_FOLLOW]: '/admin/friends',
-    [UserRight.MANAGE_VIDEO_ABUSES]: '/admin/video-abuses',
-    [UserRight.MANAGE_VIDEO_BLACKLIST]: '/admin/video-blacklist'
+  menuSections: MenuSection[] = []
+  loggedIn: boolean
+  moreInfoLabel = $localize`More info`
+
+  private user: AuthUser
+  private canSeeVideoMakerBlock: boolean
+
+  private authSub: Subscription
+
+  get shortDescription () {
+    return this.serverService.getHTMLConfig().instance.shortDescription
   }
 
-  constructor (
-    private authService: AuthService,
-    private serverService: ServerService,
-    private router: Router
-  ) {}
+  get instanceName () {
+    return this.serverService.getHTMLConfig().instance.name
+  }
+
+  get collapsed () {
+    return this.menu.isCollapsed()
+  }
+
+  get isOverlay () {
+    return this.menu.isCollapsed()
+  }
 
   ngOnInit () {
-    this.isLoggedIn = this.authService.isLoggedIn()
-    if (this.isLoggedIn === true) this.user = this.authService.getUser()
-    this.computeIsUserHasAdminAccess()
+    this.loggedIn = this.authService.isLoggedIn()
+    this.onUserStateChange()
 
-    this.authService.loginChangedSource.subscribe(
-      status => {
-        if (status === AuthStatus.LoggedIn) {
-          this.isLoggedIn = true
-          this.user = this.authService.getUser()
-          this.computeIsUserHasAdminAccess()
-          console.log('Logged in.')
-        } else if (status === AuthStatus.LoggedOut) {
-          this.isLoggedIn = false
-          this.user = undefined
-          this.computeIsUserHasAdminAccess()
-          console.log('Logged out.')
-        } else {
-          console.error('Unknown auth status: ' + status)
-        }
-      }
-    )
+    this.authSub = this.authService.loginChangedSource.subscribe(status => {
+      if (status === AuthStatus.LoggedIn) this.loggedIn = true
+      else if (status === AuthStatus.LoggedOut) this.loggedIn = false
+
+      this.onUserStateChange()
+    })
   }
 
-  getUserAvatarUrl () {
-    return this.user.getAvatarUrl()
+  ngOnDestroy () {
+    if (this.authSub) this.authSub.unsubscribe()
   }
 
-  isRegistrationAllowed () {
-    return this.serverService.getConfig().signup.allowed
+  // ---------------------------------------------------------------------------
+
+  toggleMenu () {
+    this.menu.toggleMenu()
   }
 
-  getFirstAdminRightAvailable () {
-    const user = this.authService.getUser()
-    if (!user) return undefined
+  // ---------------------------------------------------------------------------
 
-    const adminRights = [
-      UserRight.MANAGE_USERS,
-      UserRight.MANAGE_SERVER_FOLLOW,
-      UserRight.MANAGE_VIDEO_ABUSES,
-      UserRight.MANAGE_VIDEO_BLACKLIST
-    ]
+  private async buildMenuSections () {
+    this.menuSections = []
 
-    for (const adminRight of adminRights) {
-      if (user.hasRight(adminRight)) {
-        return adminRight
+    for (const section of [ this.buildQuickLinks(), this.buildLibraryLinks(), this.buildVideoMakerLinks(), this.buildAdminLinks() ]) {
+      if (section.links.length !== 0) {
+        this.menuSections.push(section)
       }
     }
 
-    return undefined
+    this.menuSections = await this.hooks.wrapObject(this.menuSections, 'common', 'filter:left-menu.links.create.result')
   }
 
-  getFirstAdminRouteAvailable () {
-    const right = this.getFirstAdminRightAvailable()
+  private buildQuickLinks (): MenuSection {
+    const base: MenuSection = {
+      key: 'quick-access',
+      title: $localize`Quick access`,
+      links: [
+        {
+          path: this.redirectService.getDefaultRoute(),
+          query: this.redirectService.getDefaultRouteQuery(),
+          icon: 'home',
+          label: $localize`Home`
+        }
+      ]
+    }
 
-    return this.routesPerRight[right]
+    if (this.loggedIn) {
+      base.links.push({
+        path: '/videos/subscriptions',
+        icon: 'subscriptions',
+        label: $localize`Subscriptions`
+      })
+    }
+
+    return base
   }
 
-  logout (event: Event) {
-    event.preventDefault()
+  private buildLibraryLinks (): MenuSection {
+    let links: MenuLink[] = []
 
-    this.authService.logout()
-    // Redirect to home page
-    this.router.navigate(['/videos/list'])
+    if (this.loggedIn) {
+      links = links.concat([
+        {
+          path: '/my-library/video-playlists',
+          icon: 'playlists',
+          label: $localize`Playlists`
+        },
+        {
+          path: '/my-library/history/videos',
+          icon: 'history',
+          label: $localize`History`
+        }
+      ])
+    }
+
+    return {
+      key: 'my-library',
+      title: $localize`My library`,
+      links
+    }
   }
 
-  private computeIsUserHasAdminAccess () {
-    const right = this.getFirstAdminRightAvailable()
+  private buildVideoMakerLinks (): MenuSection {
+    let links: MenuLink[] = []
 
-    this.userHasAdminAccess = right !== undefined
+    if (this.loggedIn && this.canSeeVideoMakerBlock) {
+      links = links.concat([
+        {
+          path: '/my-library/video-channels',
+          icon: 'channel',
+          iconClass: 'channel-icon',
+          label: $localize`Channels`
+        },
+
+        {
+          path: '/my-library/videos',
+          icon: 'videos',
+          label: $localize`Videos`
+        },
+
+        {
+          path: '/videos/publish',
+          icon: 'upload',
+          label: $localize`Publish`,
+          isPrimaryButton: true,
+          ngClass: 'publish-button'
+        }
+      ])
+    }
+
+    return {
+      key: 'my-video-space',
+      title: $localize`My video space`,
+      links
+    }
+  }
+
+  private buildAdminLinks (): MenuSection {
+    const links: MenuLink[] = []
+
+    if (this.loggedIn) {
+      if (this.user.hasRight(UserRight.SEE_ALL_VIDEOS)) {
+        links.push({
+          path: '/admin/overview',
+          icon: 'overview',
+          label: $localize`Overview`
+        })
+      }
+
+      if (this.user.hasRight(UserRight.MANAGE_ABUSES)) {
+        links.push({
+          path: '/admin/moderation',
+          icon: 'moderation',
+          label: $localize`Moderation`
+        })
+      }
+
+      if (this.user.hasRight(UserRight.MANAGE_CONFIGURATION)) {
+        links.push({
+          path: '/admin/settings',
+          icon: 'config',
+          label: $localize`Settings`
+        })
+      }
+    }
+
+    return {
+      key: 'admin',
+      title: $localize`Administration`,
+      links
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private computeCanSeeVideoMakerBlock () {
+    if (!this.loggedIn) return of(false)
+    if (!this.user.hasUploadDisabled()) return of(true)
+
+    return this.authService.userInformationLoaded
+      .pipe(
+        first(),
+        switchMap(() => this.userService.getMyVideoQuotaUsed()),
+        map(({ videoQuotaUsed }) => {
+          // User already uploaded videos, so it can see the link
+          if (videoQuotaUsed !== 0) return true
+
+          // No videos, no upload so the user don't need to see the videos link
+          return false
+        })
+      )
+  }
+
+  private onUserStateChange () {
+    this.user = this.loggedIn
+      ? this.authService.getUser()
+      : undefined
+
+    this.computeCanSeeVideoMakerBlock()
+      .subscribe(res => {
+        this.canSeeVideoMakerBlock = res
+
+        if (this.canSeeVideoMakerBlock) debugLogger('User can see videos link.')
+        else debugLogger('User cannot see videos link.')
+
+        this.buildMenuSections()
+      })
+  }
+
+  isRTL () {
+    return getLocaleDirection(this.localeId) === 'rtl'
   }
 }

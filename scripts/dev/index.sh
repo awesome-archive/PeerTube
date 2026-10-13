@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 
 set -eu
 
-NODE_ENV=test concurrently -k \
-  "npm run watch:client" \
-  "npm run watch:server"
+npm run concurrently -- -k \
+  "sh scripts/dev/client.sh --skip-server ${1:-}" \
+  "ANGULAR_CLIENT_ENABLED=true sh scripts/dev/server.sh --skip-client"

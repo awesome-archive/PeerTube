@@ -1,0 +1,30 @@
+peertube-container {
+  display: block;
+  margin-bottom: 2rem;
+
+  > .layout-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 2rem;
+
+    > peertube-video-embed,
+    > peertube-playlist-embed {
+      flex-grow: 1;
+    }
+  }
+
+  > .layout-column {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .header {
+    margin: 0 0 1rem;
+
+    > h4 {
+      margin-bottom: 0;
+      line-height: 1; // Align with the top of the container
+    }
+  }
+}

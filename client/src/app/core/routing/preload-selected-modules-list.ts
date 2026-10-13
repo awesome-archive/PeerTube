@@ -1,14 +1,21 @@
-import { Route, PreloadingStrategy } from '@angular/router'
-import { Observable } from 'rxjs/Observable'
-import 'rxjs/add/observable/timer'
-import 'rxjs/add/operator/switchMap'
+import { Observable, of as ofObservable, timer as observableTimer } from 'rxjs'
+import { switchMap } from 'rxjs/operators'
+import { Injectable } from '@angular/core'
+import { PreloadingStrategy, Route } from '@angular/router'
 
+@Injectable()
 export class PreloadSelectedModulesList implements PreloadingStrategy {
-  preload (route: Route, load: Function): Observable<any> {
-    if (!route.data || !route.data.preload) return Observable.of(null)
+  preload (route: Route, load: () => Observable<any>): Observable<any> {
+    if (!route.data?.preload) return ofObservable(null)
 
     if (typeof route.data.preload === 'number') {
-      return Observable.timer(route.data.preload).switchMap(() => load())
+      return observableTimer(route.data.preload)
+        .pipe(switchMap(() => {
+          // Not proud of this, but it allows to mark the route as preloaded so we don't display the loading indicator
+          route.data.preloaded = true
+
+          return load()
+        }))
     }
 
     return load()

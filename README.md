@@ -1,171 +1,175 @@
 <h1 align="center">
-  PeerTube
+  <a href="https://joinpeertube.org">
+    <img src="https://joinpeertube.org/img/brand.png" alt="PeerTube">
+  </a>
 </h1>
 
-<h4 align="center">
-Federated (ActivityPub) video streaming platform using P2P (BitTorrent)
-directly in the web browser with <a href="https://github.com/feross/webtorrent">WebTorrent</a>.
-</h4>
-
-**PeerTube is sponsored by [Framasoft](https://framatube.org/#en), a non-profit
-that promotes, spreads and develops free culture in general, and free-libre
-software in particular. If you want to support this project, please [consider
-donating to them](https://soutenir.framasoft.org/en/).**
-
-<p align="center">
-  <strong>Client</strong>
-
-  <br />
-
-  <a href="https://david-dm.org/Chocobozzz/PeerTube?path=client">
-    <img src="https://david-dm.org/Chocobozzz/PeerTube.svg?path=client" alt="Dependency Status" />
-  </a>
-
-  <a href="https://david-dm.org/Chocobozzz/PeerTube?path=client&type=dev">
-    <img src="https://david-dm.org/Chocobozzz/PeerTube/dev-status.svg?path=client" alt="devDependency Status" />
-  </a>
+<p align=center>
+  <strong><a href="https://joinpeertube.org">Website</a></strong>
+  | <strong><a href="https://joinpeertube.org/instances">Join an instance</a></strong>
+  | <strong><a href="https://github.com/Chocobozzz/PeerTube/blob/develop/README.md#package-create-your-own-instance">Create an instance</a></strong>
+  | <strong><a href="https://github.com/Chocobozzz/PeerTube/blob/develop/README.md#contact">Chat with us</a></strong>
+  | <strong><a href="https://framasoft.org/en/#soutenir">Donate</a></strong>
 </p>
 
 <p align="center">
-  <strong>Server</strong>
+Be part of a network of multiple small federated, interoperable video hosting providers. Follow video creators and create videos. No vendor lock-in. All on a platform that is community-owned and ad-free.
+</p>
 
-  <br />
+<p align="center">
+  <strong>Developed with &#10084; by <a href="https://framasoft.org">Framasoft</a></strong>
+</p>
 
-  <a href="https://travis-ci.org/Chocobozzz/PeerTube">
-    <img src="https://travis-ci.org/Chocobozzz/PeerTube.svg?branch=develop" alt="Build Status" />
-  </a>
-
-  <a href="https://david-dm.org/Chocobozzz/PeerTube">
-    <img src="https://david-dm.org/Chocobozzz/PeerTube.svg" alt="Dependencies Status" />
-  </a>
-
-  <a href="https://david-dm.org/Chocobozzz/PeerTube?type=dev">
-    <img src="https://david-dm.org/Chocobozzz/PeerTube/dev-status.svg" alt="devDependency Status" />
-  </a>
-
-  <a href="http://standardjs.com/">
-    <img src="https://img.shields.io/badge/code%20style-standard-brightgreen.svg" alt="JavaScript Style Guide" />
-  </a>
-
-  <a href="https://kiwiirc.com/client/irc.freenode.net/#peertube">
-    <img src="https://img.shields.io/badge/%23peertube-on%20freenode-brightgreen.svg" alt="PeerTube Freenode IRC" />
+<p align="center">
+  <a href="https://framasoft.org">
+    <img width="150px" src="https://asso.framasoft.org/pic/7dcsknbA/8XSBIpLF.png" alt="Framasoft logo"/>
   </a>
 </p>
+
+<div align="center">
+  <a href="https://github.com/Chocobozzz/PeerTube/actions?query=workflow%3A%22Test%22+branch%3Adevelop">
+    <img src="https://github.com/Chocobozzz/PeerTube/workflows/Test/badge.svg" alt="GitHub Test Status">
+  </a>
+
+  <a href="https://automate.browserstack.com/public-build/d0ZMeGpSUFRjaUpDNnN3NUdKY1l2TnNpTGVJaUI0bm9hYkNxMTRtQ1lHTT0tLVZQa2crbFB1c2RDZUl1Y1Blck02SFE9PQ==--5f956d6857c50e06a0b7b1fe405fb93d0f2d0e11%">
+    <img src="https://automate.browserstack.com/badge.svg?badge_key=d0ZMeGpSUFRjaUpDNnN3NUdKY1l2TnNpTGVJaUI0bm9hYkNxMTRtQ1lHTT0tLVZQa2crbFB1c2RDZUl1Y1Blck02SFE9PQ==--5f956d6857c50e06a0b7b1fe405fb93d0f2d0e11%" alt="BrowserStack Status">
+  </a>
+
+  <a href="https://weblate.framasoft.org/projects/peertube/angular/">
+    <img src="https://weblate.framasoft.org/widgets/peertube/-/angular/svg-badge.svg" alt="Weblate Status">
+  </a>
+</div>
 
 <br />
 
 <p align="center">
-  <a href="https://peertube.cpy.re">
-    <img src="https://lutim.cpy.re/mRdBAdeD.png" alt="screenshot" />
+  <a href="https://framatube.org/w/kkGMgK9ZtnKfYAgnEtQxbv">
+    <img src="https://asso.framasoft.org/pic/wI6n1YIH/hKfCL8Xi.png" alt="screenshot" />
   </a>
 </p>
 
-<p align="center">
-  <strong><a title="Website" target="_blank" href="https://joinpeertube.org">Website</a> |
-  <a title="Instances list" target="_blank" href="https://instances.joinpeertube.org">Instances list</a>
-  </strong>
+Introduction
+----------------------------------------------------------------
+
+PeerTube is a free, decentralized and federated video platform developed as an alternative to other platforms that centralize our data and attention, such as YouTube, Dailymotion or Vimeo. :clapper:
+
+To learn more:
+* This [two-minute video](https://framatube.org/videos/watch/217eefeb-883d-45be-b7fc-a788ad8507d3) (hosted on PeerTube) explaining what PeerTube is and how it works
+* PeerTube's project homepage, [joinpeertube.org](https://joinpeertube.org)
+* Demonstration instances:
+  * [peertube.cpy.re](https://peertube.cpy.re) (stable)
+  * [peertube2.cpy.re](https://peertube2.cpy.re) (Nightly)
+  * [peertube3.cpy.re](https://peertube3.cpy.re) (RC)
+* This [video](https://peertube.cpy.re/videos/watch/da2b08d4-a242-4170-b32a-4ec8cbdca701) demonstrating the communication between PeerTube and [Mastodon](https://github.com/tootsuite/mastodon) (a decentralized Twitter alternative)
+
+:sparkles: Features
+----------------------------------------------------------------
+
+<p align=center>
+  <strong><a href="https://joinpeertube.org/faq#what-are-the-peertube-features-for-viewers">All features for viewers</a></strong>
+  | <strong><a href="https://joinpeertube.org/faq#what-are-the-peertube-features-for-content-creators">All features for content creators</a></strong>
+  | <strong><a href="https://joinpeertube.org/faq#what-are-the-peertube-features-for-administrators">All features for administrators</a></strong>
 </p>
 
-## Demonstration
-
-Want to see it in action?
-
-   * Demonstration servers:
-     * [peertube.cpy.re](http://peertube.cpy.re)
-     * [peertube2.cpy.re](http://peertube2.cpy.re)
-     * [peertube3.cpy.re](http://peertube3.cpy.re)
-   * [Video](https://peertube.cpy.re/videos/watch/f78a97f8-a142-4ce1-a5bd-154bf9386504)
-     to see what the "decentralization feature" looks like
-   * [Video](https://peertube.cpy.re/videos/watch/da2b08d4-a242-4170-b32a-4ec8cbdca701) to see
-   the communication between PeerTube and [Mastodon](https://github.com/tootsuite/mastodon)
-
-## Why
-
-We can't build a FOSS video streaming alternatives to YouTube, Dailymotion,
-Vimeo... with a centralized software. One organization alone may not have
-enough money to pay for bandwidth and video storage of its servers.
-
-So we need to have a decentralized network of servers seeding videos (as
-[Diaspora](https://github.com/diaspora/diaspora) for example).  But it's not
-enough because one video could become famous and overload the server.  It's the
-reason why we need to use a P2P protocol to limit the server load.  Thanks to
-[WebTorrent](https://github.com/feross/webtorrent), we can make P2P (thus
-BitTorrent) inside the web browser, as of today.
-
-## Dependencies
-
-  * nginx
-  * PostgreSQL
-  * Redis
-  * **NodeJS >= 8.x**
-  * yarn
-  * OpenSSL (cli)
-  * **FFmpeg >= 3.x**
-
-## Run using Docker
-
-See the [docker guide](/support/doc/docker.md)
-
-## Production
-
-See the [production guide](/support/doc/production.md).
-
-## Contributing/Test
-
-See the [contributing
-guide](/.github/CONTRIBUTING.md)
-to see how to test or contribute to PeerTube. Spoiler alert: you don't need to be a
-coder to help!
-
-## API REST documentation
-
-For now only on Github:
-
- * HTML version: [/support/doc/api/html/index.html](https://htmlpreview.github.io/?https://github.com/Chocobozzz/PeerTube/blob/develop/support/doc/api/html/index.html)
- * Swagger/OpenAPI schema: [/support/doc/api/openapi.yaml](/support/doc/api/openapi.yaml)
-
-## Tools
-
- * [Import videos (YouTube, Dailymotion, Vimeo...)](/support/doc/tools.md)
- * [Upload videos from the CLI](/support/doc/tools.md)
-
-## FAQ
-
-If you have a question, please try to find the answer in the [FAQ](/FAQ.md) first.
-
-## Architecture
-
-See [ARCHITECTURE.md](/ARCHITECTURE.md) for a more detailed explanation.
-
-### Backend
-
-  * The backend is a REST API.
-  * Servers communicate with each others with [Activity
-    Pub](https://www.w3.org/TR/activitypub/).
-  * Each server has its own users who query it (search videos, query where the
-    torrent URI of this specific video is...).
-  * If a user uploads a video, the server seeds it and sends its followers some
-    metadata (name, short description, torrent URI...).
-  * A server is a tracker responsible for all the videos uploaded in it.
-  * Even if nobody watches a video, it is seeded by the server (through
-    [WebSeed protocol](http://www.bittorrent.org/beps/bep_0019.html)) where the
-    video was uploaded.
-
-Here are some simple schemes:
-
-<p align="center">
-
-<img src="https://lutim.cpy.re/6Qut3ure.png" alt="Decentralized" />
-
-<img src="https://lutim.cpy.re/NvRAcv6U.png" alt="Watch a video" />
-
-<img src="https://lutim.cpy.re/pqKm3Q5S.png" alt="Watch a P2P video" />
-
+<img src="https://asso.framasoft.org/pic/z6py52z2/61ZyIm65.png" align="left" height="300px"/>
+<h3 align="left">Video streaming, even in live!</h3>
+<p align="left">
+Just upload your videos, and be sure they will stream anywhere. Add a description, some tags and your video will be discoverable by the entire video fediverse, not just your instance. You can even embed a player on your favorite website!
 </p>
+<p align="left">
+You are used to hosting live events? We got you covered too! Start livestreaming from your favorite client, and even host permanent streams!
+</p>
+
+---
+
+<img src="https://asso.framasoft.org/pic/lYrgaP2N/Sj3hgkeo.png" align="right" height="200px"/>
+
+<h3 align="right">Keep in touch with video creators</h3>
+<p align="right">
+Follow your favorite channels from PeerTube or really any other place. No need to have an account on the instance you watched a video to follow its author, you can do all of that from the Fediverse (Mastodon, Pleroma, and plenty others), or just with good ol' RSS.
+</p>
+
+---
+
+<img src="https://asso.framasoft.org/pic/UbNnLlzV/Sx0PSrH1.png" align="left" height="200px"/>
+
+<h3 align="left">An interface to call home</h3>
+<p align="left">
+Be it as a user or an instance administrator, you can decide what your experience will be like. Don't like the colors? They are easy to change. Don't want to list videos of an instance but let your users subscribe to them? Don't like the regular web client? All of that can be changed, and much more. No UX dark pattern, no mining your data, no video recommendation bullshit™.
+</p>
+
+---
+
+<h3 align="right">Communities that help each other</h3>
+<p align="right">
+In addition to visitors using P2P with WebRTC to share the load among them, instances can help each other by caching one another's videos. This way even small instances have a way to show content to a wider audience, as they will be shouldered by friend instances (more about that in our <a href="https://docs.joinpeertube.org/contribute/architecture#redundancy-between-instances">redundancy guide</a>).
+</p>
+<p align="right">
+Content creators can get help from their viewers in the simplest way possible: a support button showing a message linking to their donation accounts or really anything else. No more pay-per-view and advertisements that hurt visitors and alter creativity (more about that in our <a href="https://github.com/Chocobozzz/PeerTube/blob/develop/FAQ.md">FAQ</a>).
+</p>
+
+
+
+:raised_hands: Contributing
+----------------------------------------------------------------
+
+You don't need to be a programmer to help!
+
+You can give us your feedback, report bugs, help us translate PeerTube, write documentation, and more. Check out the [contributing
+guide](https://docs.joinpeertube.org/contribute/getting-started) to know how, it takes less than 2 minutes to get started. :wink:
+
+You can also join the cheerful bunch that makes our community<a name="contact"></a>:
+
+* Matrix (bridged on [Discord](https://discord.gg/wj8DDUT)): **[#peertube:matrix.org](https://matrix.to/#/#peertube:matrix.org)**
+* Forum: [https://framacolibri.org/c/peertube](https://framacolibri.org/c/peertube)
+
+Feel free to reach out if you have any questions or ideas! :speech_balloon:
+
+:package: Create your own instance
+----------------------------------------------------------------
+
+See the [production guide](https://docs.joinpeertube.org/install/any-os), which is the recommended way to install or upgrade PeerTube. For hardware requirements, see [Should I have a big server to run PeerTube?](https://joinpeertube.org/faq#should-i-have-a-big-server-to-run-peertube) in the FAQ.
+
+See the [community packages](https://docs.joinpeertube.org/install/unofficial), which cover various platforms (including [YunoHost](https://install-app.yunohost.org/?app=peertube) and [Docker](https://github.com/Chocobozzz/PeerTube/blob/develop/support/doc/docker.md)).
+
+:book: Documentation
+----------------------------------------------------------------
+
+If you have a question, please try to find the answer in the [FAQ](https://joinpeertube.org/faq) first.
+
+### User documentation
+
+See the [user documentation](https://docs.joinpeertube.org/use/setup-account).
+
+### Admin documentation
+
+See [how to create your own instance](https://github.com/Chocobozzz/PeerTube/blob/develop/README.md#package-create-your-own-instance).
+
+See the more general [admin documentation](https://docs.joinpeertube.org/admin/following-instances).
+
+### Tools documentation
+
+Learn how to import/upload videos from CLI or admin your PeerTube instance with the [tools documentation](https://docs.joinpeertube.org/maintain/tools).
+
+### Technical documentation
+
+See the [architecture blueprint](https://docs.joinpeertube.org/contribute/architecture) for a more detailed explanation of the architectural choices.
+
+See our REST API documentation:
+  * OpenAPI 3.0.0 schema: [/support/doc/api/openapi.yaml](https://github.com/Chocobozzz/PeerTube/blob/develop/support/doc/api/openapi.yaml)
+  * Spec explorer: [docs.joinpeertube.org/api-rest-reference.html](https://docs.joinpeertube.org/api-rest-reference.html)
+
+See our [ActivityPub documentation](https://docs.joinpeertube.org/api/activitypub).
 
 ## License
 
-Copyright (C) 2018 PeerTube Contributors
+### Logo
+
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), by [Framasoft](https://framasoft.org)
+
+### Code
+
+Copyright (C) 2015-2025 PeerTube Contributors (see [CREDITS.md](/CREDITS.md))
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published
@@ -178,4 +182,4 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+along with this program.  If not, see <https://www.gnu.org/licenses/>.

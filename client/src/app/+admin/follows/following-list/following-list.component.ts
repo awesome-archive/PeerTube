@@ -1,57 +1,112 @@
-import { Component, OnInit } from '@angular/core'
-import { NotificationsService } from 'angular2-notifications'
-import { SortMeta } from 'primeng/primeng'
-import { AccountFollow } from '../../../../../../shared/models/actors/follow.model'
-import { ConfirmService } from '../../../core/confirm/confirm.service'
-import { RestPagination, RestTable } from '../../../shared'
-import { FollowService } from '../shared'
+import { Component, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
+import { RouterLink } from '@angular/router'
+import { ConfirmService, Notifier } from '@app/core'
+import { formatICU } from '@app/helpers'
+import { InstanceFollowService } from '@app/shared/shared-instance/instance-follow.service'
+import { PTDatePipe } from '@app/shared/shared-main/common/date.pipe'
+import { ActorFollow, FollowState } from '@peertube/peertube-models'
+import { AdvancedFilterDef } from '../../../shared/shared-forms/advanced-input-filter.component'
+import { GlobalIconComponent } from '../../../shared/shared-icons/global-icon.component'
+import { DropdownAction } from '../../../shared/shared-main/buttons/action-dropdown.component'
+import { DeleteButtonComponent } from '../../../shared/shared-main/buttons/delete-button.component'
+import { NumberFormatterPipe } from '../../../shared/shared-main/common/number-formatter.pipe'
+import { DataLoaderOptionsBase, TableColumnInfo, TableComponent } from '../../../shared/shared-tables/table.component'
+import { RedundancyCheckboxComponent } from '../shared/redundancy-checkbox.component'
+import { FollowModalComponent } from './follow-modal.component'
+
+type DataLoaderParameter = Parameters<FollowingListComponent['_dataLoader']>[0]
 
 @Component({
-  selector: 'my-followers-list',
-  templateUrl: './following-list.component.html'
+  templateUrl: './following-list.component.html',
+  styleUrls: [ './following-list.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [
+    RouterLink,
+    GlobalIconComponent,
+    DeleteButtonComponent,
+    RedundancyCheckboxComponent,
+    FollowModalComponent,
+    PTDatePipe,
+    TableComponent,
+    NumberFormatterPipe
+  ]
 })
-export class FollowingListComponent extends RestTable implements OnInit {
-  following: AccountFollow[] = []
-  totalRecords = 0
-  rowsPerPage = 10
-  sort: SortMeta = { field: 'createdAt', order: 1 }
-  pagination: RestPagination = { count: this.rowsPerPage, start: 0 }
+export class FollowingListComponent implements OnInit {
+  private notifier = inject(Notifier)
+  private confirmService = inject(ConfirmService)
+  private followService = inject(InstanceFollowService)
 
-  constructor (
-    private notificationsService: NotificationsService,
-    private confirmService: ConfirmService,
-    private followService: FollowService
-  ) {
-    super()
+  readonly followModal = viewChild<FollowModalComponent>('followModal')
+  readonly table = viewChild<TableComponent<ActorFollow, DataLoaderParameter>>('table')
+
+  inputFilters: AdvancedFilterDef<DataLoaderParameter>[] = []
+
+  bulkActions: DropdownAction<ActorFollow[]>[] = []
+
+  columns: TableColumnInfo<string>[] = [
+    { id: 'following', label: $localize`Following`, sortable: false },
+    { id: 'state', label: $localize`State`, sortable: true },
+    { id: 'createdAt', label: $localize`Created`, sortable: true },
+    { id: 'redundancyAllowed', label: $localize`Redundancy allowed`, sortable: true }
+  ]
+
+  dataLoader: typeof this._dataLoader
+
+  constructor () {
+    this.dataLoader = this._dataLoader.bind(this)
   }
 
   ngOnInit () {
-    this.loadSort()
+    this.inputFilters = this.followService.buildFollowsListFilters()
+
+    this.bulkActions = [
+      {
+        label: $localize`Delete`,
+        handler: follows => this.removeFollowing(follows)
+      }
+    ]
   }
 
-  async removeFollowing (follow: AccountFollow) {
-    const res = await this.confirmService.confirm(`Do you really want to unfollow ${follow.following.host}?`, 'Unfollow')
+  openFollowModal () {
+    this.followModal().openModal()
+  }
+
+  isInstanceFollowing (follow: ActorFollow) {
+    return follow.following.name === 'peertube'
+  }
+
+  buildFollowingName (follow: ActorFollow) {
+    return follow.following.name + '@' + follow.following.host
+  }
+
+  async removeFollowing (follows: ActorFollow[]) {
+    const icuParams = { count: follows.length, entryName: this.buildFollowingName(follows[0]) }
+
+    const message = formatICU(
+      $localize`Do you really want to unfollow {count, plural, =1 {{entryName}?} other {{count} entries?}}`,
+      icuParams
+    )
+
+    const res = await this.confirmService.confirm(message, $localize`Unfollow`)
     if (res === false) return
 
-    this.followService.unfollow(follow).subscribe(
-      () => {
-        this.notificationsService.success('Success', `You are not following ${follow.following.host} anymore.`)
-        this.loadData()
-      },
+    this.followService.unfollow(follows)
+      .subscribe({
+        next: () => {
+          const message = formatICU(
+            $localize`You are not following {count, plural, =1 {{entryName} anymore.} other {these {count} entries anymore.}}`,
+            icuParams
+          )
 
-      err => this.notificationsService.error('Error', err.message)
-    )
+          this.notifier.success(message)
+          this.table().loadData()
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
   }
 
-  protected loadData () {
-    this.followService.getFollowing(this.pagination, this.sort)
-                      .subscribe(
-                        resultList => {
-                          this.following = resultList.data
-                          this.totalRecords = resultList.total
-                        },
-
-                        err => this.notificationsService.error('Error', err.message)
-                      )
+  private _dataLoader (options: DataLoaderOptionsBase & { state?: FollowState }) {
+    return this.followService.listSubscriptions(options)
   }
 }

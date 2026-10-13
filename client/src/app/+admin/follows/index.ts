@@ -1,6 +1,4 @@
-export * from './following-add'
 export * from './followers-list'
 export * from './following-list'
-export * from './shared'
-export * from './follows.component'
+export * from './video-redundancies-list'
 export * from './follows.routes'
